@@ -1,0 +1,72 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-main: #0f172a;
+  --bg-sidebar: #0f172a;
+  --bg-surface: rgba(30, 41, 59, 0.5);
+  --bg-input: rgba(15, 23, 42, 0.5);
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+  --primary: #3b82f6;
+  --primary-hover: #2563eb;
+  --border: rgba(51, 65, 85, 0.5);
+  --radius: 1.5rem;
+  --font-family: 'Inter', sans-serif;
+}
+
+.theme-cartoon {
+  --bg-main: #fff0f3;
+  --bg-sidebar: #ffe3e8;
+  --bg-surface: #ffffff;
+  --bg-input: #f8f9fa;
+  --text-main: #4a4a4a;
+  --text-muted: #8a8a8a;
+  --primary: #ff85a1;
+  --primary-hover: #ff5c8d;
+  --border: #ffccd5;
+  --radius: 2.5rem;
+  --font-family: 'Quicksand', sans-serif;
+}
+
+.theme-forest {
+  --bg-main: #f1f8e9;
+  --bg-sidebar: #dcedc8;
+  --bg-surface: #ffffff;
+  --bg-input: #f1f8e9;
+  --text-main: #2d3436;
+  --text-muted: #636e72;
+  --primary: #2d6a4f;
+  --primary-hover: #1b4332;
+  --border: #c5e1a5;
+  --radius: 1rem;
+  --font-family: 'Outfit', sans-serif;
+}
+
+.theme-minimalist {
+  --bg-main: #ffffff;
+  --bg-sidebar: #ffffff;
+  --bg-surface: #f8f9fa;
+  --bg-input: #ffffff;
+  --text-main: #000000;
+  --text-muted: #666666;
+  --primary: #000000;
+  --primary-hover: #333333;
+  --border: #eeeeee;
+  --radius: 0px;
+  --font-family: 'Space Mono', monospace;
+}
+
+body {
+  background-color: var(--bg-main);
+  color: var(--text-main);
+  font-family: var(--font-family);
+  transition: all 0.3s ease;
+}
+
+@layer base {
+  body {
+    @apply bg-[var(--bg-main)] text-[var(--text-main)];
+  }
+}

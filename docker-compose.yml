@@ -1,0 +1,76 @@
+#version: '3.8'
+
+services:
+  mailserver:
+    image: ghcr.io/docker-mailserver/docker-mailserver:latest
+    container_name: mailserver
+    hostname: mail
+    domainname: asianoel.space
+    ports:
+      - "25:25"    # SMTP
+      - "143:143"  # IMAP
+      - "587:587"  # Submission
+      - "993:993"  # IMAPS
+    volumes:
+      - ./config/dms/mail-data:/var/mail
+      - ./config/dms/mail-state:/var/mail-state
+      - ./config/dms/mail-config:/tmp/docker-mailserver
+      - ./config/dms/certs:/etc/letsencrypt
+    environment:
+      - ENABLE_SPAMASSASSIN=0
+      - ENABLE_CLAMAV=0
+      - ENABLE_FAIL2BAN=1  # Disabled for diagnosis
+      - PERMIT_DOCKER=network
+      - SPOOF_PROTECTION=0
+      - ENABLE_DNSBL=0
+      - SSL_TYPE=
+      - ONE_DIR=1
+      - LOG_LEVEL=debug
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+    restart: always
+    networks:
+      - lifemail-net
+
+  backend:
+    image: node:18
+    container_name: lifemail-backend
+    working_dir: /app
+    ports:
+      - "3001:3001"
+    volumes:
+      - ./backend:/app
+      - ./config/dms/mail-config:/tmp/docker-mailserver
+    environment:
+      - MAIL_SERVER_HOST=mailserver
+      - PORT=3001
+      - JWT_SECRET=supersecret
+      - NODE_ENV=development
+    command: sh -c "npm install && npm run dev"
+    depends_on:
+      - mailserver
+    restart: always
+    networks:
+      - lifemail-net
+
+  frontend:
+    image: node:18
+    container_name: lifemail-frontend
+    working_dir: /app
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+    environment:
+      - VITE_API_URL=http://192.168.0.112:3001
+    command: sh -c "npm install && npm run dev"
+    depends_on:
+      - backend
+    restart: always
+    networks:
+      - lifemail-net
+
+networks:
+  lifemail-net:
+    driver: bridge

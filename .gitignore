@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+dist/
+.DS_Store
+
+# Docker Mailserver Data (VERY IMPORTANT: DO NOT UPLOAD DATA OR KEYS)
+config/dms/mail-data/
+config/dms/mail-config/
+config/dms/mail-state/
+config/dms/config/
+config/dms/keys/
+
+# Application Secrets & State
+backend/lifemail-metadata.json
+backend/node_modules/
+frontend/node_modules/
+
+# Environment Files
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Docker
+.docker/
