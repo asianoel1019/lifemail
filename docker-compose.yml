@@ -42,6 +42,7 @@ services:
     volumes:
       - ./backend:/app
       - ./config/dms/mail-config:/tmp/docker-mailserver
+      - ./config/dms/mail-data:/var/mail:ro
     environment:
       - MAIL_SERVER_HOST=mailserver
       - PORT=3001

@@ -4,7 +4,8 @@ import {
   Search, Settings, HelpCircle, Grid, 
   Menu, Users, Shield, LayoutDashboard,
   ChevronRight, ArrowLeft, RefreshCw, LogOut,
-  Palette, Lock, Eye, EyeOff, Edit2, Paperclip, Download
+  Palette, Lock, Eye, EyeOff, Edit2, Paperclip, Download,
+  Reply, ReplyAll, Forward, Loader2, Image
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
@@ -15,26 +16,43 @@ const ThemeContext = createContext();
 
 export default function App() {
   const [view, setView] = useState('inbox');
-  const [user, setUser] = useState(JSON.parse(localStorage.getItem('user')) || null);
+  const [composeData, setComposeData] = useState(null);
+  const [user, setUser] = useState(() => {
+    try {
+      const saved = localStorage.getItem('user');
+      return saved ? JSON.parse(saved) : null;
+    } catch { return null; }
+  });
   const [emails, setEmails] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
   const [loading, setLoading] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'serious');
   const [unreadCount, setUnreadCount] = useState(0);
   const [folders, setFolders] = useState([]);
+  const [storage, setStorage] = useState({ used: 0, quota: 10 });
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (user) {
       fetchEmails();
       fetchFolders();
+      fetchStorage();
     }
   }, [user, view]);
+
+  const fetchStorage = async () => {
+    if (!user) return;
+    try {
+      const res = await axios.post(`${API_BASE}/user/storage`, { email: user.email });
+      setStorage(res.data);
+    } catch (err) { console.error('Fetch Storage Error:', err); }
+  };
 
   const setThemeAndSync = (newTheme) => {
     setTheme(newTheme);
     localStorage.setItem('theme', newTheme);
     if (user) {
-      axios.post(`${API_BASE}/user/theme`, { email: user.email, theme: newTheme });
+      axios.post(`${API_BASE}/user/theme`, { email: user.email, theme: newTheme }).catch(console.error);
     }
   };
 
@@ -46,18 +64,22 @@ export default function App() {
     if (!user || ['admin', 'system_config', 'security', 'settings', 'compose', 'read'].includes(view)) return;
     setLoading(true);
     try {
+      const folderParam = view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view;
       const res = await axios.post(`${API_BASE}/mail/list`, {
         email: user.email,
-        password: localStorage.getItem('userPass'), // Stored securely for demo
-        folder: view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view,
+        password: localStorage.getItem('userPass'),
+        folder: folderParam,
         starredOnly: view === 'starred'
       });
-      setEmails(res.data);
+      const data = Array.isArray(res.data) ? res.data : [];
+      setEmails(data);
+      setError(null);
       if (view === 'inbox') {
-        setUnreadCount(res.data.filter(e => !e.seen).length);
+        setUnreadCount(data.filter(e => !e.seen).length);
       }
     } catch (err) {
-      console.error(err);
+      console.error('Fetch Emails Error:', err);
+      setError('Connection to mail server lost or credentials invalid.');
     } finally {
       setLoading(false);
     }
@@ -69,8 +91,12 @@ export default function App() {
       const res = await axios.post(`${API_BASE}/mail/folders`, {
         email: user.email, password: localStorage.getItem('userPass')
       });
-      setFolders(res.data);
-    } catch (err) { console.error(err); }
+      setFolders(Array.isArray(res.data) ? res.data : []);
+      setError(null);
+    } catch (err) { 
+      console.error('Fetch Folders Error:', err);
+      setError('Failed to sync folders.');
+    }
   };
 
   const createFolder = async () => {
@@ -124,8 +150,8 @@ export default function App() {
     <ThemeContext.Provider value={{ theme, setTheme: setThemeAndSync }}>
       <div className="h-screen flex overflow-hidden bg-[var(--bg-main)] text-[var(--text-main)] transition-colors duration-300">
         {/* Sidebar */}
-        <aside className="w-64 border-r border-[var(--border)] flex flex-col pt-4 bg-[var(--bg-sidebar)] backdrop-blur-md">
-          <div className="px-6 mb-8 flex items-center gap-3">
+        <aside className="w-64 border-r border-[var(--border)] flex flex-col bg-[var(--bg-sidebar)] backdrop-blur-md shrink-0">
+          <div className="p-6 flex items-center gap-3">
             <div className="w-10 h-10 bg-[var(--primary)] rounded-[var(--radius)] flex items-center justify-center shadow-lg shadow-blue-500/20">
               <Mail className="text-white w-5 h-5" />
             </div>
@@ -134,7 +160,7 @@ export default function App() {
 
           <div className="px-4 mb-6">
             <button 
-              onClick={() => setView('compose')}
+              onClick={() => { setComposeData(null); setView('compose'); }}
               className="w-full flex items-center justify-center gap-2 bg-[var(--primary)] hover:opacity-90 py-3 rounded-[var(--radius)] font-bold text-white shadow-lg transition-all active:scale-95 group"
             >
               <Plus className="w-5 h-5 transition-transform group-hover:rotate-90" />
@@ -144,7 +170,16 @@ export default function App() {
 
           <nav className="flex-1 px-4 space-y-1 overflow-y-auto custom-scrollbar">
             <NavItem icon={<Inbox />} label="Inbox" active={view === 'inbox'} onClick={() => setView('inbox')} count={unreadCount} onDrop={(uid, src) => moveEmail(uid, src, 'INBOX')} />
-            <NavItem icon={<Star />} label="Starred" active={view === 'starred'} onClick={() => setView('starred')} onDrop={(uid, src) => moveEmail(uid, src, 'Starred')} />
+            <NavItem 
+              icon={<Star />} 
+              label="Starred" 
+              active={view === 'starred'} 
+              onClick={() => setView('starred')} 
+              onDrop={async (uid, src) => {
+                await axios.post(`${API_BASE}/mail/toggle-star`, { email: user.email, password: localStorage.getItem('userPass'), uid, starred: true, folder: src });
+                fetchEmails();
+              }} 
+            />
             <NavItem icon={<Send />} label="Sent" active={view === 'sent'} onClick={() => setView('sent')} onDrop={(uid, src) => moveEmail(uid, src, 'Sent')} />
             <NavItem icon={<Trash2 />} label="Trash" active={view === 'trash'} onClick={() => setView('trash')} onDrop={(uid, src) => moveEmail(uid, src, 'Trash')} />
             
@@ -181,8 +216,8 @@ export default function App() {
         </aside>
 
         {/* Main Content */}
-        <main className="flex-1 flex flex-col">
-          <header className="h-16 border-b border-[var(--border)] flex items-center justify-between px-6">
+        <main className="flex-1 flex flex-col overflow-hidden">
+          <header className="h-16 border-b border-[var(--border)] flex items-center justify-between px-6 bg-[var(--bg-sidebar)]/50 backdrop-blur-sm shrink-0">
             <div className="flex-1 max-w-2xl relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
               <input 
@@ -192,13 +227,19 @@ export default function App() {
               />
             </div>
             <div className="flex items-center gap-4 text-[var(--text-muted)]">
-              <button className="hover:text-[var(--text-main)]"><RefreshCw size={18} onClick={fetchEmails} className={loading ? 'animate-spin' : ''} /></button>
+              <button onClick={fetchEmails} className="hover:text-[var(--text-main)] transition-colors"><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button>
               <div className="w-[1px] h-4 bg-[var(--border)]"></div>
-              <button onClick={() => setView('settings')} className="hover:text-[var(--text-main)]"><Settings size={20} /></button>
+              <button onClick={() => setView('settings')} className="hover:text-[var(--text-main)] transition-colors"><Settings size={20} /></button>
             </div>
           </header>
 
-          <div className="flex-1 overflow-y-auto custom-scrollbar">
+          <div className="flex-1 overflow-y-auto custom-scrollbar bg-[var(--bg-main)]">
+            {error && (
+              <div className="m-6 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-red-500 text-sm font-bold flex items-center gap-3">
+                <Shield size={18} /> {error}
+                <button onClick={() => { fetchEmails(); fetchFolders(); }} className="ml-auto underline">Retry</button>
+              </div>
+            )}
             <AnimatePresence mode="wait">
               {!['admin', 'system_config', 'security', 'settings', 'compose', 'read'].includes(view) && (
                 <motion.div 
@@ -209,7 +250,7 @@ export default function App() {
                   className="divide-y divide-[var(--border)]"
                 >
                   {emails.length === 0 ? (
-                    <EmptyState label={`No messages in ${view}`} />
+                    <EmptyState label={loading ? "Synchronizing..." : `No messages in ${view}`} />
                   ) : (
                     emails.map(email => (
                       <EmailRow 
@@ -254,9 +295,29 @@ export default function App() {
                   <SecurityPanel />
                 </motion.div>
               )}
-              {view === 'settings' && <SettingsView user={user} theme={theme} setTheme={setTheme} />}
-              {view === 'compose' && <ComposeView onCancel={() => setView('inbox')} onSent={fetchEmails} />}
-              {view === 'read' && <ReadView email={selectedEmail} user={user} onBack={() => { setView(view === 'sent' ? 'sent' : 'inbox'); fetchEmails(); }} />}
+              {view === 'settings' && (
+                <motion.div key="settings" initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -20 }} className="h-full">
+                  <SettingsView user={user} setUser={setUser} theme={theme} setTheme={setThemeAndSync} storage={storage} />
+                </motion.div>
+              )}
+              {view === 'compose' && (
+                <motion.div key="compose" initial={{ opacity: 0, y: 50 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 50 }} className="h-full">
+                  <ComposeView user={user} onCancel={() => setView('inbox')} onSent={fetchEmails} initialData={composeData} />
+                </motion.div>
+              )}
+              {view === 'read' && (
+                <motion.div key={`read-${selectedEmail?.uid}`} initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -50 }} className="h-full">
+                  <ReadView email={selectedEmail} user={user} onBack={() => setView('inbox')} onDelete={async () => {
+                    if (!window.confirm('Delete this message?')) return;
+                    await axios.post(`${API_BASE}/mail/delete`, { email: user.email, password: localStorage.getItem('userPass'), uid: selectedEmail.uid, folder: selectedEmail.folder });
+                    setView('inbox');
+                    fetchEmails();
+                  }} onAction={(type, data) => {
+                    setComposeData(data);
+                    setView('compose');
+                  }} />
+                </motion.div>
+              )}
             </AnimatePresence>
           </div>
         </main>
@@ -276,12 +337,14 @@ function NavItem({ icon, label, active, onClick, count, onDrop }) {
       onDrop={(e) => {
         e.preventDefault();
         setIsOver(false);
-        const data = JSON.parse(e.dataTransfer.getData('email'));
-        onDrop(data.uid, data.folder, label);
+        try {
+          const data = JSON.parse(e.dataTransfer.getData('email'));
+          onDrop(data.uid, data.folder, label);
+        } catch (err) { console.error('Drop error:', err); }
       }}
       className={`w-full flex items-center justify-between px-4 py-3 rounded-[var(--radius)] transition-all duration-200 group ${
         active 
-          ? 'bg-[var(--primary)] text-white font-bold' 
+          ? 'bg-[var(--primary)] text-white font-bold shadow-md' 
           : isOver ? 'bg-[var(--primary)]/20 text-[var(--primary)] scale-105' : 'text-[var(--text-muted)] hover:bg-[var(--bg-surface)] hover:text-[var(--text-main)]'
       }`}
     >
@@ -290,7 +353,7 @@ function NavItem({ icon, label, active, onClick, count, onDrop }) {
         <span className="text-sm tracking-wide">{label}</span>
       </div>
       {count > 0 && (
-        <span className={`text-[10px] px-2 py-0.5 rounded-full ${active ? 'bg-white text-[var(--primary)]' : 'bg-[var(--primary)] text-white'}`}>
+        <span className={`text-[10px] px-2 py-0.5 rounded-full font-black ${active ? 'bg-white text-[var(--primary)]' : 'bg-[var(--primary)] text-white'}`}>
           {count}
         </span>
       )}
@@ -302,17 +365,17 @@ function UserProfile({ user, logout, setView }) {
   const [open, setOpen] = useState(false);
 
   return (
-    <div className="p-4 border-t border-[var(--border)] relative">
+    <div className="p-4 border-t border-[var(--border)] relative bg-[var(--bg-sidebar)]">
       <button 
         onClick={() => setOpen(!open)}
         className="w-full flex items-center gap-3 px-2 py-2 rounded-[var(--radius)] hover:bg-[var(--bg-surface)] transition-colors"
       >
-        <div className="w-8 h-8 rounded-full bg-[var(--primary)] flex items-center justify-center text-white text-xs font-bold">
+        <div className="w-8 h-8 rounded-full bg-[var(--primary)] flex items-center justify-center text-white text-xs font-bold shadow-sm">
           {user.email.charAt(0).toUpperCase()}
         </div>
         <div className="flex-1 overflow-hidden text-left">
           <p className="text-xs font-bold truncate">{user.email}</p>
-          <p className="text-[10px] text-[var(--text-muted)] uppercase">{user.role}</p>
+          <p className="text-[10px] text-[var(--text-muted)] uppercase font-black">{user.role}</p>
         </div>
         <Settings className="w-4 h-4 text-[var(--text-muted)]" />
       </button>
@@ -323,14 +386,14 @@ function UserProfile({ user, logout, setView }) {
             initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: 10 }}
             className="absolute bottom-full left-4 right-4 mb-2 bg-[var(--bg-surface)] border border-[var(--border)] rounded-[var(--radius)] shadow-2xl p-2 z-50 backdrop-blur-xl"
           >
-            <button onClick={() => { setView('settings'); setOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[var(--bg-main)] rounded-lg transition-colors">
+            <button onClick={() => { setView('settings'); setOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[var(--bg-main)] rounded-lg transition-colors font-bold">
               <Palette size={14} /> Appearance
             </button>
-            <button onClick={() => { setView('security'); setOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[var(--bg-main)] rounded-lg transition-colors">
+            <button onClick={() => { setView('security'); setOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[var(--bg-main)] rounded-lg transition-colors font-bold">
               <Lock size={14} /> Security
             </button>
             <div className="h-[1px] bg-[var(--border)] my-1"></div>
-            <button onClick={logout} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-500 hover:bg-red-500/10 rounded-lg transition-colors">
+            <button onClick={logout} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-500 hover:bg-red-500/10 rounded-lg transition-colors font-bold">
               <LogOut size={14} /> Sign Out
             </button>
           </motion.div>
@@ -351,148 +414,209 @@ function EmailRow({ email, onClick, onDelete, onStar, currentFolder }) {
       className={`flex items-center gap-4 px-6 py-4 hover:bg-[var(--bg-surface)] cursor-pointer transition-colors group border-l-4 ${email.seen ? 'border-transparent' : 'border-[var(--primary)]'}`}
     >
       <div className={`w-10 h-10 rounded-[var(--radius)] flex items-center justify-center font-bold transition-colors ${email.seen ? 'bg-[var(--bg-input)] text-[var(--text-muted)]' : 'bg-[var(--primary)] text-white shadow-md'}`}>
-        {email.from.charAt(0).toUpperCase()}
+        {email.from ? email.from.charAt(0).toUpperCase() : '?'}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex justify-between mb-1">
           <h4 className={`text-sm truncate pr-4 ${email.seen ? 'font-medium' : 'font-black'}`}>{email.from}</h4>
-          <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase">{new Date(email.date).toLocaleDateString()}</span>
+          <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase">{email.date ? new Date(email.date).toLocaleDateString() : ''}</span>
         </div>
-        <p className={`text-xs truncate mb-0.5 ${email.seen ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)] font-bold'}`}>{email.subject}</p>
+        <p className={`text-xs truncate mb-0.5 ${email.seen ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)] font-bold'}`}>{email.subject || '(No Subject)'}</p>
       </div>
       <div className="opacity-0 group-hover:opacity-100 flex items-center gap-2 transition-opacity">
         <button 
-          onClick={onStar}
+          onClick={(e) => { e.stopPropagation(); onStar(e); }}
           className={`p-2 hover:bg-[var(--bg-main)] rounded-lg transition-colors ${email.starred ? 'text-yellow-500' : 'text-[var(--text-muted)]'}`}
         >
           <Star size={14} fill={email.starred ? 'currentColor' : 'none'} />
         </button>
-        <button onClick={onDelete} className="p-2 hover:bg-[var(--bg-main)] rounded-lg text-red-500 transition-colors"><Trash2 size={14} /></button>
+        <button onClick={(e) => { e.stopPropagation(); onDelete(e); }} className="p-2 hover:bg-[var(--bg-main)] rounded-lg text-red-500 transition-colors"><Trash2 size={14} /></button>
       </div>
     </div>
   );
 }
 
-function ReadView({ email, user, onBack }) {
-  const [content, setContent] = useState(null);
+function ReadView({ email, user, onBack, onDelete, onAction }) {
+  const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const fetch = async () => {
+    const load = async () => {
       try {
         const res = await axios.post(`${API_BASE}/mail/fetch`, {
-          email: user.email, 
-          password: localStorage.getItem('userPass'), 
-          uid: email.uid,
-          folder: email.folder || 'INBOX'
+          email: user.email, password: localStorage.getItem('userPass'), uid: email.uid, folder: email.folder || 'INBOX'
         });
-        setContent(res.data);
-      } catch (err) {} finally { setLoading(false); }
+        setData(res.data);
+      } catch (err) { console.error(err); }
+      finally { setLoading(false); }
     };
-    fetch();
+    load();
   }, [email.uid]);
 
+  if (loading) return (
+    <div className="flex-1 flex items-center justify-center bg-[var(--bg-main)]">
+      <Loader2 className="w-8 h-8 animate-spin text-[var(--primary)]" />
+    </div>
+  );
+
+  const handleReply = (all = false) => {
+    const quote = `\n\n--- Original Message ---\nFrom: ${email.from}\nDate: ${new Date(email.date).toLocaleString()}\nSubject: ${email.subject}\n\n${data?.text || ''}`;
+    onAction('reply', {
+      to: email.from,
+      subject: `Re: ${email.subject}`,
+      body: quote
+    });
+  };
+
+  const handleForward = () => {
+    const quote = `\n\n--- Forwarded Message ---\nFrom: ${email.from}\nDate: ${new Date(email.date).toLocaleString()}\nSubject: ${email.subject}\n\n${data?.text || ''}`;
+    onAction('forward', {
+      subject: `Fwd: ${email.subject}`,
+      body: quote
+    });
+  };
+
   return (
-    <motion.div initial={{ x: 20, opacity: 0 }} animate={{ x: 0, opacity: 1 }} className="p-8 max-w-4xl mx-auto">
-      <button onClick={onBack} className="flex items-center gap-2 text-[var(--primary)] font-bold mb-8 transition-colors">
-        <ArrowLeft size={18} /> Back
-      </button>
-
-      <div className="bg-[var(--bg-surface)] rounded-[var(--radius)] p-8 border border-[var(--border)] shadow-2xl min-h-[500px] relative">
-        <div className="absolute top-8 right-8 flex gap-2">
-           <button 
-             onClick={async () => {
-               await axios.post(`${API_BASE}/mail/toggle-star`, { email: user.email, password: localStorage.getItem('userPass'), uid: email.uid, starred: !email.starred, folder: 'INBOX' });
-               window.location.reload(); // Refresh to update star status
-             }}
-             className={`p-3 rounded-xl border border-[var(--border)] transition-colors ${email.starred ? 'bg-yellow-500/10 border-yellow-500/50 text-yellow-500' : 'bg-[var(--bg-input)] text-[var(--text-muted)]'}`}
-           >
-             <Star size={20} fill={email.starred ? 'currentColor' : 'none'} />
-           </button>
+    <div className="flex-1 flex flex-col h-full bg-[var(--bg-main)] overflow-hidden">
+      {/* Top Toolbar */}
+      <div className="flex items-center justify-between p-4 border-b border-[var(--border)] bg-[var(--bg-sidebar)]/50 backdrop-blur-md">
+        <div className="flex items-center gap-2">
+          <button onClick={onBack} className="p-2 rounded-lg hover:bg-[var(--bg-surface)] transition-all"><ArrowLeft size={20} /></button>
+          <div className="w-px h-6 bg-[var(--border)] mx-2" />
+          <button onClick={() => handleReply(false)} className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-[var(--bg-surface)] text-sm font-bold transition-all">
+            <Reply size={16} /> Reply
+          </button>
+          <button onClick={() => handleReply(true)} className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-[var(--bg-surface)] text-sm font-bold transition-all">
+            <ReplyAll size={16} /> Reply All
+          </button>
+          <button onClick={handleForward} className="flex items-center gap-2 px-3 py-1.5 rounded-lg hover:bg-[var(--bg-surface)] text-sm font-bold transition-all">
+            <Forward size={16} /> Forward
+          </button>
         </div>
+        <button onClick={onDelete} className="p-2 rounded-lg hover:bg-red-500/10 text-red-500 transition-all">
+          <Trash2 size={20} />
+        </button>
+      </div>
 
-        <h1 className="text-3xl font-bold mb-6 tracking-tight pr-16">{email.subject}</h1>
-        <div className="flex items-center gap-4 mb-10 pb-10 border-b border-[var(--border)]">
-          <div className="w-14 h-14 rounded-[var(--radius)] bg-[var(--primary)] text-white flex items-center justify-center text-2xl font-black">
-            {email.from.charAt(0).toUpperCase()}
+      <div className="flex-1 overflow-y-auto p-8 custom-scrollbar">
+        <div className="max-w-4xl mx-auto bg-[var(--bg-surface)] rounded-[var(--radius)] p-8 border border-[var(--border)] shadow-2xl min-h-[500px]">
+          <h1 className="text-3xl font-bold mb-8 text-[var(--text-main)]">{email.subject || '(No Subject)'}</h1>
+          
+          <div className="flex items-center gap-4 mb-10 pb-6 border-b border-[var(--border)]">
+            <div className="w-12 h-12 rounded-[var(--radius)] bg-[var(--primary)] flex items-center justify-center text-white text-xl font-black shadow-md">
+              {email.from ? email.from[0].toUpperCase() : '?'}
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="flex items-center justify-between mb-1">
+                <span className="font-bold text-lg text-[var(--text-main)] truncate pr-4">{email.from}</span>
+                <span className="text-xs text-[var(--text-muted)] font-bold shrink-0">{new Date(email.date).toLocaleString()}</span>
+              </div>
+              <span className="text-xs text-[var(--text-muted)] font-black uppercase tracking-widest">to me</span>
+            </div>
           </div>
-          <div>
-            <p className="font-bold text-lg">{email.from}</p>
-            <p className="text-xs text-[var(--text-muted)]">{new Date(email.date).toLocaleString()}</p>
-          </div>
-        </div>
 
-        <div className="text-[var(--text-main)] leading-relaxed mb-12">
-          {loading ? <div className="animate-pulse py-20 text-center">Loading message...</div> : (
-            <div className="space-y-6">
-              {content?.html ? <div dangerouslySetInnerHTML={{ __html: content.html }} /> : <div className="whitespace-pre-wrap">{content?.text}</div>}
+          <div className="text-[var(--text-main)] leading-relaxed mb-12">
+            {data?.html ? <div dangerouslySetInnerHTML={{ __html: data.html }} /> : <div className="whitespace-pre-wrap">{data?.text}</div>}
+          </div>
+
+          {data?.attachments?.length > 0 && (
+            <div className="mt-12 pt-8 border-t border-[var(--border)]">
+              <h3 className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest mb-6 flex items-center gap-2">
+                <Paperclip size={14} /> Attachments ({data.attachments.length})
+              </h3>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {data.attachments.map((att, idx) => (
+                  <div key={idx} className="flex items-center justify-between p-4 bg-[var(--bg-input)] border border-[var(--border)] rounded-xl group hover:border-[var(--primary)] transition-all">
+                    <div className="flex items-center gap-3 overflow-hidden">
+                      <div className="w-10 h-10 rounded-lg bg-[var(--bg-main)] flex items-center justify-center text-[var(--primary)] shadow-sm">
+                        <Paperclip size={18} />
+                      </div>
+                      <div className="overflow-hidden">
+                        <div className="text-sm font-bold truncate">{att.filename}</div>
+                        <div className="text-[10px] font-black text-[var(--text-muted)] uppercase">{(att.size / 1024).toFixed(1)} KB</div>
+                      </div>
+                    </div>
+                    <a 
+                      href={`${API_BASE}/mail/attachment?email=${user.email}&password=${localStorage.getItem('userPass')}&uid=${email.uid}&folder=${email.folder || 'INBOX'}&filename=${encodeURIComponent(att.filename)}`}
+                      className="p-2 rounded-lg bg-[var(--bg-main)] hover:bg-[var(--primary)] hover:text-white transition-all text-[var(--text-muted)]"
+                      download
+                    >
+                      <Download size={16} />
+                    </a>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
         </div>
-
-        {content?.attachments?.length > 0 && (
-          <div className="pt-10 border-t border-[var(--border)]">
-            <h4 className="text-xs font-black text-[var(--text-muted)] uppercase tracking-widest mb-6 flex items-center gap-2">
-              <Paperclip size={14} /> Attachments ({content.attachments.length})
-            </h4>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {content.attachments.map((file, idx) => (
-                <div key={idx} className="flex items-center justify-between p-4 bg-[var(--bg-input)] rounded-xl border border-[var(--border)] group hover:border-[var(--primary)] transition-all">
-                  <div className="flex items-center gap-3 overflow-hidden">
-                    <div className="p-2 bg-[var(--bg-main)] rounded-lg text-[var(--primary)]">
-                      <Paperclip size={16} />
-                    </div>
-                    <div className="overflow-hidden">
-                      <p className="text-sm font-bold truncate">{file.filename}</p>
-                      <p className="text-[10px] text-[var(--text-muted)]">{(file.size / 1024).toFixed(1)} KB</p>
-                    </div>
-                  </div>
-                  <button 
-                    onClick={() => {
-                      const url = `${API_BASE}/mail/attachment?email=${user.email}&password=${localStorage.getItem('userPass')}&uid=${email.uid}&folder=${email.folder}&filename=${encodeURIComponent(file.filename)}`;
-                      window.open(url, '_blank');
-                    }}
-                    className="p-2 opacity-0 group-hover:opacity-100 transition-opacity text-[var(--primary)]"
-                  >
-                    <Download size={18} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
       </div>
-    </motion.div>
+    </div>
   );
 }
+function SettingsView({ user, setUser, theme, setTheme, storage }) {
+  const [signature, setSignature] = useState(user.signature || '');
+  const [saving, setSaving] = useState(false);
 
-function SettingsView({ user, theme, setTheme }) {
+  const saveSignature = async () => {
+    setSaving(true);
+    try {
+      await axios.post(`${API_BASE}/user/signature`, { email: user.email, signature });
+      const newUser = { ...user, signature };
+      setUser(newUser);
+      localStorage.setItem('user', JSON.stringify(newUser));
+      alert('Signature saved successfully!');
+    } catch (err) { alert(err.message); }
+    finally { setSaving(false); }
+  };
+
+  const usedGB = (storage.used / (1024 * 1024 * 1024)).toFixed(2);
+  const percent = Math.min(100, Math.round((storage.used / (storage.quota * 1024 * 1024 * 1024)) * 100));
+
   return (
-    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="p-8 max-w-4xl mx-auto">
-      <h2 className="text-3xl font-black mb-8">Settings</h2>
+    <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="p-8 max-w-4xl mx-auto space-y-8">
+      <h2 className="text-3xl font-black mb-4">Account Settings</h2>
       
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-        <div className="bg-[var(--bg-surface)] p-8 rounded-[var(--radius)] border border-[var(--border)] shadow-xl">
-          <h3 className="text-xl font-bold mb-6 flex items-center gap-2"><Palette className="text-[var(--primary)]" /> Appearance</h3>
-          <div className="grid grid-cols-2 gap-4">
-            <ThemeCard label="Serious" id="serious" active={theme === 'serious'} onClick={() => setTheme('serious')} color="#3b82f6" />
-            <ThemeCard label="Cartoon" id="cartoon" active={theme === 'cartoon'} onClick={() => setTheme('cartoon')} color="#ff85a1" />
-            <ThemeCard label="Forest" id="forest" active={theme === 'forest'} onClick={() => setTheme('forest')} color="#2d6a4f" />
-            <ThemeCard label="Minimalist" id="minimalist" active={theme === 'minimalist'} onClick={() => setTheme('minimalist')} color="#000000" />
-          </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div className="lg:col-span-2 space-y-8">
+          <section className="bg-[var(--bg-surface)] p-8 rounded-[var(--radius)] border border-[var(--border)] shadow-xl">
+            <h3 className="text-xl font-bold mb-6 flex items-center gap-2">
+               <Edit2 className="text-[var(--primary)]" size={20} /> Personal Signature
+            </h3>
+            <div className="space-y-4">
+              <textarea 
+                value={signature}
+                onChange={e => setSignature(e.target.value)}
+                placeholder="Best Regards,&#10;Your Name"
+                className="w-full bg-[var(--bg-input)] p-5 border border-[var(--border)] rounded-2xl h-40 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] resize-none font-medium transition-all"
+              />
+              <button 
+                onClick={saveSignature}
+                disabled={saving}
+                className="bg-[var(--primary)] text-white font-black px-8 py-3 rounded-xl shadow-lg transition-all active:scale-95 flex items-center gap-2 disabled:opacity-50"
+              >
+                {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Shield size={18} />} Save Signature
+              </button>
+            </div>
+          </section>
+
+          <section className="bg-[var(--bg-surface)] p-8 rounded-[var(--radius)] border border-[var(--border)] shadow-xl">
+            <h3 className="text-xl font-bold mb-6 flex items-center gap-2"><Palette className="text-[var(--primary)]" /> Appearance</h3>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+              <ThemeCard label="Serious" id="serious" active={theme === 'serious'} onClick={() => setTheme('serious')} color="#3b82f6" />
+              <ThemeCard label="Cartoon" id="cartoon" active={theme === 'cartoon'} onClick={() => setTheme('cartoon')} color="#ff85a1" />
+              <ThemeCard label="Forest" id="forest" active={theme === 'forest'} onClick={() => setTheme('forest')} color="#2d6a4f" />
+              <ThemeCard label="Minimalist" id="minimalist" active={theme === 'minimalist'} onClick={() => setTheme('minimalist')} color="#000000" />
+            </div>
+          </section>
         </div>
 
-        <div className="bg-[var(--bg-surface)] p-8 rounded-[var(--radius)] border border-[var(--border)] shadow-xl">
-          <h3 className="text-xl font-bold mb-6 flex items-center gap-2"><Shield className="text-[var(--primary)]" /> Account Information</h3>
-          <div className="space-y-4">
-            <div>
-              <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase">Email Address</p>
-              <p className="font-bold">{user.email}</p>
-            </div>
-            <div>
-              <p className="text-[10px] font-bold text-[var(--text-muted)] uppercase">Access Level</p>
-              <span className="px-2 py-0.5 bg-[var(--primary)] text-white rounded-full text-[10px] font-bold uppercase">{user.role}</span>
-            </div>
+        <div className="space-y-8">
+          <div className="bg-[var(--bg-surface)] p-8 rounded-[var(--radius)] border border-[var(--border)] shadow-xl">
+             <h3 className="font-bold mb-4">Storage Usage</h3>
+             <div className="h-2 bg-[var(--bg-input)] rounded-full overflow-hidden mb-2">
+                <div className="h-full bg-[var(--primary)] transition-all duration-1000" style={{ width: `${percent}%` }} />
+             </div>
+             <p className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest">{usedGB} GB of {storage.quota} GB Used</p>
           </div>
         </div>
       </div>
@@ -506,7 +630,7 @@ function ThemeCard({ label, active, onClick, color }) {
       onClick={onClick}
       className={`p-4 rounded-[var(--radius)] border-2 transition-all flex flex-col items-center gap-3 ${active ? 'border-[var(--primary)] bg-[var(--bg-main)]' : 'border-[var(--border)] hover:border-[var(--text-muted)]'}`}
     >
-      <div className="w-10 h-10 rounded-full" style={{ backgroundColor: color }}></div>
+      <div className="w-10 h-10 rounded-full shadow-inner" style={{ backgroundColor: color }}></div>
       <span className="text-xs font-bold">{label}</span>
     </button>
   );
@@ -514,12 +638,25 @@ function ThemeCard({ label, active, onClick, color }) {
 
 function SystemConfigPanel() {
   const [config, setConfig] = useState({ defaultDomain: '' });
+  const [totalStorage, setTotalStorage] = useState(0);
 
-  useEffect(() => { fetchConfig(); }, []);
+  useEffect(() => { 
+    fetchConfig();
+    fetchTotalStorage();
+  }, []);
 
   const fetchConfig = async () => {
-    const res = await axios.get(`${API_BASE}/admin/config`, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
-    setConfig(res.data);
+    try {
+      const res = await axios.get(`${API_BASE}/admin/config`, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
+      setConfig(res.data);
+    } catch (err) { console.error(err); }
+  };
+
+  const fetchTotalStorage = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/admin/storage`, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
+      setTotalStorage(res.data.totalUsed);
+    } catch (err) { console.error(err); }
   };
 
   const updateConfig = async () => {
@@ -529,9 +666,28 @@ function SystemConfigPanel() {
     } catch (err) { alert('Failed to update config'); }
   };
 
+  const totalGB = (totalStorage / (1024 * 1024 * 1024)).toFixed(2);
+
   return (
     <div className="p-8 max-w-4xl mx-auto space-y-8">
-      <h1 className="text-3xl font-black">System Configuration</h1>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div className="bg-[var(--bg-surface)] p-10 rounded-[var(--radius)] border border-[var(--border)] shadow-2xl">
+          <h3 className="text-xl font-black mb-4 flex items-center gap-2">
+             <LayoutDashboard className="text-[var(--primary)]" /> System Storage
+          </h3>
+          <p className="text-4xl font-black text-[var(--primary)] mb-2">{totalGB} GB</p>
+          <p className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest">Total mail data usage across all accounts</p>
+        </div>
+        
+        <div className="bg-[var(--bg-surface)] p-10 rounded-[var(--radius)] border border-[var(--border)] shadow-2xl flex flex-col justify-center">
+           <h3 className="text-sm font-bold mb-2">Mail Server Status</h3>
+           <div className="flex items-center gap-2">
+             <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse"></div>
+             <span className="font-bold text-green-500">Operational</span>
+           </div>
+        </div>
+      </div>
+
       <div className="bg-[var(--bg-surface)] p-10 rounded-[var(--radius)] border border-[var(--border)] shadow-2xl">
         <h3 className="text-xl font-black mb-8 flex items-center gap-2">
           <Settings className="text-[var(--primary)]" /> Global Mail Settings
@@ -540,7 +696,7 @@ function SystemConfigPanel() {
           <div className="space-y-2">
             <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">Default Mail Domain</label>
             <input 
-              className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-5 py-4 font-bold text-lg"
+              className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-5 py-4 font-bold text-lg focus:ring-2 focus:ring-[var(--primary)] outline-none"
               value={config.defaultDomain}
               onChange={e => setConfig({ ...config, defaultDomain: e.target.value })}
               placeholder="e.g. asianoel.space"
@@ -565,37 +721,46 @@ function AdminPanel() {
   const [newEmail, setNewEmail] = useState('');
   const [newPass, setNewPass] = useState('');
   const [newRole, setNewRole] = useState('user');
+  const [newQuota, setNewQuota] = useState(10);
   const [editingUser, setEditingUser] = useState(null);
 
   useEffect(() => { fetchUsers(); }, []);
 
   const fetchUsers = async () => {
-    const res = await axios.get(`${API_BASE}/admin/users`, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
-    setUsers(res.data);
+    try {
+      const res = await axios.get(`${API_BASE}/admin/users`, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
+      setUsers(res.data);
+    } catch (err) { console.error(err); }
   };
 
   const addUser = async (e) => {
     e.preventDefault();
-    await axios.post(`${API_BASE}/admin/users`, { email: newEmail, password: newPass, role: newRole }, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
-    setNewEmail(''); setNewPass(''); fetchUsers();
+    try {
+      await axios.post(`${API_BASE}/admin/users`, { email: newEmail, password: newPass, role: newRole, quota: newQuota }, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
+      setNewEmail(''); setNewPass(''); setNewQuota(10); fetchUsers();
+    } catch (err) { alert(err.message); }
   };
 
   const deleteUser = async (email) => {
     if (!window.confirm(`Are you sure you want to delete ${email}?`)) return;
-    await axios.delete(`${API_BASE}/admin/users`, { 
-      data: { email },
-      headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } 
-    });
-    fetchUsers();
+    try {
+      await axios.delete(`${API_BASE}/admin/users`, { 
+        data: { email },
+        headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } 
+      });
+      fetchUsers();
+    } catch (err) { alert(err.message); }
   };
 
   const updateUser = async (e) => {
     e.preventDefault();
-    await axios.patch(`${API_BASE}/admin/users`, editingUser, { 
-      headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } 
-    });
-    setEditingUser(null);
-    fetchUsers();
+    try {
+      await axios.patch(`${API_BASE}/admin/users`, editingUser, { 
+        headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } 
+      });
+      setEditingUser(null);
+      fetchUsers();
+    } catch (err) { alert(err.message); }
   };
 
   return (
@@ -609,19 +774,22 @@ function AdminPanel() {
           <div className="px-8 py-6 border-b border-[var(--border)] flex justify-between items-center">
             <h3 className="font-bold">Active Users</h3>
           </div>
-          <div className="divide-y divide-[var(--border)]">
+          <div className="divide-y divide-[var(--border)] overflow-y-auto max-h-[600px] custom-scrollbar">
             {users.map(u => (
               <div key={u.email} className="px-8 py-5 flex items-center justify-between group">
                 <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-full bg-[var(--bg-input)] flex items-center justify-center text-[var(--primary)] font-bold">{u.email.charAt(0).toUpperCase()}</div>
+                  <div className="w-10 h-10 rounded-full bg-[var(--bg-input)] flex items-center justify-center text-[var(--primary)] font-bold shadow-inner">{u.email.charAt(0).toUpperCase()}</div>
                   <div>
                     <p className="font-bold text-sm">{u.email}</p>
-                    <span className="text-[10px] font-black uppercase text-[var(--text-muted)]">{u.role}</span>
+                    <div className="flex gap-2">
+                      <span className="text-[10px] font-black uppercase text-[var(--text-muted)] tracking-wider">{u.role}</span>
+                      <span className="text-[10px] font-black uppercase text-[var(--primary)] tracking-wider">{u.quota || 10}GB QUOTA</span>
+                    </div>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button onClick={() => setEditingUser({ email: u.email, role: u.role, password: '' })} className="p-2 hover:bg-[var(--bg-main)] rounded-lg text-[var(--primary)]"><Edit2 size={14} /></button>
-                  <button onClick={() => deleteUser(u.email)} className="p-2 hover:bg-[var(--bg-main)] rounded-lg text-red-500"><Trash2 size={14} /></button>
+                  <button onClick={() => setEditingUser({ email: u.email, role: u.role, quota: u.quota || 10, password: '' })} className="p-2 hover:bg-[var(--bg-main)] rounded-lg text-[var(--primary)] transition-colors"><Edit2 size={14} /></button>
+                  <button onClick={() => deleteUser(u.email)} className="p-2 hover:bg-[var(--bg-main)] rounded-lg text-red-500 transition-colors"><Trash2 size={14} /></button>
                 </div>
               </div>
             ))}
@@ -634,25 +802,33 @@ function AdminPanel() {
             {editingUser ? (
               <form onSubmit={updateUser} className="space-y-4">
                 <p className="text-xs font-bold text-[var(--text-muted)] truncate">{editingUser.email}</p>
-                <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-2 text-sm" type="password" placeholder="New Password (optional)" value={editingUser.password} onChange={e => setEditingUser({...editingUser, password: e.target.value})} />
-                <select className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-2 text-sm" value={editingUser.role} onChange={e => setEditingUser({...editingUser, role: e.target.value})}>
+                <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--primary)] outline-none" type="password" placeholder="New Password (optional)" value={editingUser.password} onChange={e => setEditingUser({...editingUser, password: e.target.value})} />
+                <select className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--primary)] outline-none font-bold" value={editingUser.role} onChange={e => setEditingUser({...editingUser, role: e.target.value})}>
                   <option value="user">User</option>
                   <option value="admin">Admin</option>
                 </select>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">Quota (GB)</label>
+                  <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--primary)] outline-none font-bold" type="number" value={editingUser.quota} onChange={e => setEditingUser({...editingUser, quota: e.target.value})} />
+                </div>
                 <div className="flex gap-2">
-                  <button type="submit" className="flex-1 bg-[var(--primary)] text-white font-bold py-3 rounded-xl">Save</button>
-                  <button type="button" onClick={() => setEditingUser(null)} className="flex-1 bg-[var(--bg-input)] font-bold py-3 rounded-xl">Cancel</button>
+                  <button type="submit" className="flex-1 bg-[var(--primary)] text-white font-bold py-3 rounded-xl shadow-lg active:scale-95 transition-all">Save</button>
+                  <button type="button" onClick={() => setEditingUser(null)} className="flex-1 bg-[var(--bg-input)] font-bold py-3 rounded-xl border border-[var(--border)]">Cancel</button>
                 </div>
               </form>
             ) : (
               <form onSubmit={addUser} className="space-y-4">
-                <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-2 text-sm" placeholder="Email" value={newEmail} onChange={e => setNewEmail(e.target.value)} required />
-                <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-2 text-sm" type="password" placeholder="Password" value={newPass} onChange={e => setNewPass(e.target.value)} required />
-                <select className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-2 text-sm" value={newRole} onChange={e => setNewRole(e.target.value)}>
+                <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--primary)] outline-none" placeholder="Email" value={newEmail} onChange={e => setNewEmail(e.target.value)} required />
+                <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--primary)] outline-none" type="password" placeholder="Password" value={newPass} onChange={e => setNewPass(e.target.value)} required />
+                <select className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--primary)] outline-none font-bold" value={newRole} onChange={e => setNewRole(e.target.value)}>
                   <option value="user">User</option>
                   <option value="admin">Admin</option>
                 </select>
-                <button className="w-full bg-[var(--primary)] text-white font-bold py-3 rounded-xl">Provision</button>
+                <div className="space-y-1">
+                  <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">Quota (GB)</label>
+                  <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--primary)] outline-none font-bold" type="number" value={newQuota} onChange={e => setNewQuota(e.target.value)} />
+                </div>
+                <button className="w-full bg-[var(--primary)] text-white font-bold py-4 rounded-xl shadow-lg active:scale-95 transition-all">Provision Account</button>
               </form>
             )}
           </div>
@@ -682,11 +858,17 @@ function SecurityPanel() {
     <div className="p-8 max-w-xl mx-auto space-y-8">
       <h1 className="text-3xl font-black">Security Settings</h1>
       <div className="bg-[var(--bg-surface)] p-8 rounded-[var(--radius)] border border-[var(--border)] shadow-xl">
-        <h3 className="font-bold mb-6">Change Password</h3>
+        <h3 className="font-bold mb-6 flex items-center gap-2"><Lock className="text-red-500" /> Change Password</h3>
         <form onSubmit={changePassword} className="space-y-4">
-          <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm" type="password" placeholder="Current Password" value={oldPass} onChange={e => setOldPass(e.target.value)} required />
-          <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm" type="password" placeholder="New Password" value={newPass} onChange={e => setNewPass(e.target.value)} required />
-          <button className="w-full bg-red-500 text-white font-bold py-3 rounded-xl shadow-lg shadow-red-500/20 transition-all active:scale-95">Update Security Credentials</button>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">Current Password</label>
+            <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-red-500 outline-none" type="password" placeholder="••••••••" value={oldPass} onChange={e => setOldPass(e.target.value)} required />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">New Password</label>
+            <input className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-red-500 outline-none" type="password" placeholder="••••••••" value={newPass} onChange={e => setNewPass(e.target.value)} required />
+          </div>
+          <button className="w-full bg-red-500 text-white font-black py-4 rounded-xl shadow-lg shadow-red-500/20 transition-all active:scale-95 mt-4">Update Security Credentials</button>
         </form>
       </div>
     </div>
@@ -700,7 +882,7 @@ function LoginView({ onLogin, theme, setTheme }) {
 
   return (
     <div className="min-h-screen bg-[var(--bg-main)] flex flex-col items-center justify-center p-4 transition-colors duration-500">
-      <div className="absolute top-8 right-8 flex gap-2">
+      <div className="absolute top-8 right-8 flex gap-2 z-10">
         {['serious', 'cartoon', 'forest', 'minimalist'].map(t => (
           <button 
             key={t}
@@ -711,7 +893,7 @@ function LoginView({ onLogin, theme, setTheme }) {
         ))}
       </div>
 
-      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="bg-[var(--bg-surface)] p-10 rounded-[var(--radius)] border border-[var(--border)] w-full max-w-md shadow-2xl backdrop-blur-xl">
+      <motion.div initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} className="bg-[var(--bg-surface)] p-10 rounded-[var(--radius)] border border-[var(--border)] w-full max-w-md shadow-2xl backdrop-blur-xl relative z-0">
         <div className="flex justify-center mb-8">
           <div className="w-20 h-20 bg-[var(--primary)] rounded-[var(--radius)] flex items-center justify-center shadow-2xl shadow-blue-500/40">
             <Mail className="text-white w-10 h-10" />
@@ -730,7 +912,7 @@ function LoginView({ onLogin, theme, setTheme }) {
             <input type={show ? 'text' : 'password'} value={pass} onChange={e => setPass(e.target.value)} className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-[var(--radius)] px-5 py-4 text-[var(--text-main)] focus:ring-2 focus:ring-[var(--primary)] outline-none transition-all font-medium" placeholder="••••••••" required />
             <button type="button" onClick={() => setShow(!show)} className="absolute right-4 top-[38px] text-[var(--text-muted)] hover:text-[var(--text-main)]">{show ? <EyeOff size={18} /> : <Eye size={18} />}</button>
           </div>
-          <button className="w-full bg-[var(--primary)] hover:opacity-90 text-white font-black py-4 rounded-[var(--radius)] shadow-xl transition-all active:scale-95 text-lg mt-4">Authenticate</button>
+          <button className="w-full bg-[var(--primary)] hover:opacity-90 text-white font-black py-4 rounded-[var(--radius)] shadow-xl transition-all active:scale-95 text-lg mt-4 shadow-blue-500/20">Authenticate</button>
         </form>
       </motion.div>
     </div>
@@ -740,54 +922,126 @@ function LoginView({ onLogin, theme, setTheme }) {
 function EmptyState({ label }) {
   return (
     <div className="flex flex-col items-center justify-center h-[60vh] text-[var(--text-muted)]">
-      <div className="w-20 h-20 bg-[var(--bg-surface)] rounded-full flex items-center justify-center mb-4 border border-[var(--border)]">
-        <Mail size={40} />
+      <div className="w-20 h-20 bg-[var(--bg-surface)] rounded-full flex items-center justify-center mb-4 border border-[var(--border)] animate-pulse">
+        <Mail size={40} className="opacity-50" />
       </div>
       <p className="text-lg font-bold">{label}</p>
     </div>
   );
 }
 
-function ComposeView({ onCancel, onSent }) {
-  const [to, setTo] = useState('');
-  const [subject, setSubject] = useState('');
-  const [body, setBody] = useState('');
-  const [loading, setLoading] = useState(false);
-  const user = JSON.parse(localStorage.getItem('user'));
+function ComposeView({ user, onCancel, onSent, initialData }) {
+  const [to, setTo] = useState(initialData?.to || '');
+  const [subject, setSubject] = useState(initialData?.subject || '');
+  const [body, setBody] = useState(initialData?.body || `\n\n${user.signature || ''}`);
+  const [attachments, setAttachments] = useState([]);
+  const [sending, setSending] = useState(false);
+  const fileInputRef = React.useRef();
 
-  const send = async (e) => {
-    e.preventDefault();
-    setLoading(true);
+  const handleSend = async () => {
+    if (!to || !subject) return;
+    setSending(true);
     try {
-      await axios.post(`${API_BASE}/mail/send`, {
-        auth: { email: user.email, password: localStorage.getItem('userPass') },
-        to, subject, body
-      });
-      onSent(); onCancel();
+      const formData = new FormData();
+      formData.append('email', user.email);
+      formData.append('password', localStorage.getItem('userPass'));
+      formData.append('to', to);
+      formData.append('subject', subject);
+      formData.append('body', body);
+      attachments.forEach(file => formData.append('attachments', file));
+
+      await axios.post(`${API_BASE}/mail/send`, formData);
+      onSent();
+      onCancel();
     } catch (err) {
-      alert('Error: ' + err.message);
-    } finally { setLoading(false); }
+      alert('Send failed: ' + err.message);
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const handlePaste = (e) => {
+    const items = e.clipboardData.items;
+    for (let i = 0; i < items.length; i++) {
+      if (items[i].type.indexOf('image') !== -1) {
+        const blob = items[i].getAsFile();
+        const file = new File([blob], `pasted-image-${Date.now()}.png`, { type: blob.type });
+        setAttachments(prev => [...prev, file]);
+      }
+    }
   };
 
   return (
-    <motion.div initial={{ opacity: 0, y: 50 }} animate={{ opacity: 1, y: 0 }} className="p-8 max-w-3xl mx-auto">
+    <motion.div initial={{ opacity: 0, y: 50 }} animate={{ opacity: 1, y: 0 }} className="p-8 max-w-4xl mx-auto">
       <div className="bg-[var(--bg-surface)] rounded-[var(--radius)] p-8 border border-[var(--border)] shadow-2xl">
-        <div className="flex justify-between items-center mb-8 pb-4 border-b border-[var(--border)]">
+        <div className="flex items-center justify-between mb-8 pb-4 border-b border-[var(--border)]">
           <h2 className="text-2xl font-black">New Message</h2>
-          <button onClick={onCancel} className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors flex items-center gap-1">
-            <Plus className="rotate-45" size={18} /> Cancel
-          </button>
-        </div>
-        <form onSubmit={send} className="space-y-4">
-          <input type="email" placeholder="Recipients" className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 font-bold" value={to} onChange={e => setTo(e.target.value)} required />
-          <input type="text" placeholder="Subject" className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 font-bold" value={subject} onChange={e => setSubject(e.target.value)} required />
-          <textarea rows="12" placeholder="Write your message here..." className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-2xl px-4 py-4 font-medium resize-none" value={body} onChange={e => setBody(e.target.value)} required></textarea>
-          <div className="flex justify-end pt-4">
-             <button disabled={loading} className="bg-[var(--primary)] text-white font-black px-10 py-3 rounded-xl shadow-lg transition-all active:scale-95 flex items-center gap-2">
-               {loading ? <RefreshCw className="animate-spin" /> : <Send size={18} />} Send Message
-             </button>
+          <div className="flex gap-3">
+            <button onClick={onCancel} className="px-4 py-2 rounded-xl border border-[var(--border)] hover:bg-[var(--bg-main)] transition-all font-bold">Cancel</button>
+            <button 
+              onClick={handleSend} 
+              disabled={sending}
+              className="px-6 py-2 rounded-xl bg-[var(--primary)] text-white font-black hover:opacity-90 transition-all flex items-center gap-2 shadow-lg shadow-blue-500/20"
+            >
+              {sending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+              {sending ? 'Sending...' : 'Send Now'}
+            </button>
           </div>
-        </form>
+        </div>
+
+        <div className="space-y-4">
+          <div className="space-y-1">
+            <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">Recipient</label>
+            <input 
+              type="text" placeholder="to@example.com" value={to} onChange={e => setTo(e.target.value)}
+              className="w-full bg-[var(--bg-input)] p-4 border border-[var(--border)] rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] transition-all font-bold"
+            />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">Subject Matter</label>
+            <input 
+              type="text" placeholder="What's this about?" value={subject} onChange={e => setSubject(e.target.value)}
+              className="w-full bg-[var(--bg-input)] p-4 border border-[var(--border)] rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] transition-all font-bold"
+            />
+          </div>
+          
+          <div className="relative space-y-1">
+            <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">Message Content</label>
+            <textarea 
+              placeholder="Write your message..." value={body} onChange={e => setBody(e.target.value)}
+              onPaste={handlePaste}
+              className="w-full bg-[var(--bg-input)] p-4 border border-[var(--border)] rounded-2xl h-64 focus:outline-none focus:ring-2 focus:ring-[var(--primary)] resize-none custom-scrollbar font-medium"
+            />
+            <div className="absolute bottom-4 right-4 text-[10px] text-gray-400 font-bold uppercase tracking-wider bg-[var(--bg-main)] px-2 py-1 rounded-md opacity-50 border border-[var(--border)]">
+              Paste images to attach
+            </div>
+          </div>
+
+          {attachments.length > 0 && (
+            <div className="flex flex-wrap gap-2 pt-4">
+              {attachments.map((file, idx) => (
+                <div key={idx} className="flex items-center gap-2 bg-[var(--bg-main)] px-3 py-1.5 rounded-lg text-sm border border-[var(--border)] font-bold shadow-sm">
+                  <Paperclip className="w-3 h-3 text-[var(--primary)]" />
+                  <span className="truncate max-w-[150px]">{file.name}</span>
+                  <button onClick={() => setAttachments(attachments.filter((_, i) => i !== idx))} className="text-red-500 hover:scale-125 transition-transform ml-1">×</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="flex items-center gap-4 pt-4">
+            <input type="file" multiple ref={fileInputRef} className="hidden" onChange={e => setAttachments([...attachments, ...Array.from(e.target.files)])} />
+            <button 
+              onClick={() => fileInputRef.current.click()}
+              className="flex items-center gap-2 text-xs font-black text-[var(--text-muted)] hover:text-[var(--primary)] transition-all uppercase tracking-widest"
+            >
+              <Paperclip className="w-4 h-4" /> Add Attachment
+            </button>
+            <div className="text-[10px] text-[var(--primary)] font-black uppercase tracking-widest ml-auto opacity-70">
+              Signature Included
+            </div>
+          </div>
+        </div>
       </div>
     </motion.div>
   );

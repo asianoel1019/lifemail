@@ -9,6 +9,8 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const { simpleParser } = require('mailparser');
+const multer = require('multer');
+const upload = multer({ storage: multer.memoryStorage() });
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -18,7 +20,8 @@ const METADATA_PATH = path.join(DMS_CONFIG_PATH, 'lifemail-metadata.json');
 const DEFAULT_DOMAIN = 'asianoel.space';
 
 const normalizeEmail = (email) => {
-  if (!email || email === 'admin') return email;
+  if (!email || typeof email !== 'string') return email;
+  if (email === 'admin') return email;
   const config = metadata.getConfig();
   return email.includes('@') ? email : `${email}@${config.defaultDomain}`;
 };
@@ -29,11 +32,14 @@ app.use(bodyParser.json());
 // --- Metadata Helper ---
 const metadata = {
   load: () => {
-    if (!fs.existsSync(METADATA_PATH)) return { users: {} };
+    if (!fs.existsSync(METADATA_PATH)) return { users: {}, config: { defaultDomain: 'asianoel.space' } };
     try {
-      return JSON.parse(fs.readFileSync(METADATA_PATH, 'utf8'));
+      const content = fs.readFileSync(METADATA_PATH, 'utf8');
+      if (!content.trim()) return { users: {}, config: { defaultDomain: 'asianoel.space' } };
+      return JSON.parse(content);
     } catch (e) {
-      return { users: {} };
+      console.error('Metadata Load Error:', e);
+      return { users: {}, config: { defaultDomain: 'asianoel.space' } };
     }
   },
   save: (data) => {
@@ -41,11 +47,11 @@ const metadata = {
   },
   getUser: (email) => {
     const data = metadata.load();
-    return data.users[email] || { role: 'user', theme: 'serious' };
+    return data.users[email] || { role: 'user', theme: 'serious', quota: 10 };
   },
   updateUser: (email, updates) => {
     const data = metadata.load();
-    data.users[email] = { ...(data.users[email] || { role: 'user', theme: 'serious' }), ...updates };
+    data.users[email] = { ...(data.users[email] || { role: 'user', theme: 'serious', signature: '', quota: 10 }), ...updates };
     metadata.save(data);
   },
   getConfig: () => {
@@ -56,6 +62,22 @@ const metadata = {
     const data = metadata.load();
     data.config = { ...(data.config || { defaultDomain: 'asianoel.space' }), ...updates };
     metadata.save(data);
+  },
+  getDirectorySize: (dirPath) => {
+    if (!fs.existsSync(dirPath)) return 0;
+    const stats = fs.statSync(dirPath);
+    if (stats.isFile()) return stats.size;
+    
+    let total = 0;
+    try {
+      const files = fs.readdirSync(dirPath);
+      for (const file of files) {
+        total += metadata.getDirectorySize(path.join(dirPath, file));
+      }
+    } catch (e) {
+      // Ignore errors for individual files (e.g. permission denied)
+    }
+    return total;
   }
 };
 
@@ -143,7 +165,7 @@ app.post('/api/auth/login', (req, res) => {
   if (hasAccount) {
     const userMeta = metadata.getUser(email);
     const token = jwt.sign({ email, role: userMeta.role }, JWT_SECRET);
-    return res.json({ token, role: userMeta.role, email, theme: userMeta.theme });
+    return res.json({ token, role: userMeta.role, email, theme: userMeta.theme, signature: userMeta.signature });
   }
 
   res.status(401).json({ error: 'Invalid credentials' });
@@ -168,7 +190,9 @@ app.post('/api/admin/users', authenticateAdmin, (req, res) => {
   let { email, password, role } = req.body;
   email = normalizeEmail(email);
   try {
+    const { quota = 10 } = req.body;
     adminUtils.addUser(email, password, role);
+    metadata.updateUser(email, { quota: Number(quota) });
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to add user' });
@@ -185,8 +209,12 @@ app.patch('/api/admin/users', authenticateAdmin, (req, res) => {
   let { email, password, role } = req.body;
   email = normalizeEmail(email);
   try {
+    const { quota } = req.body;
     if (password) adminUtils.updateUserPassword(email, password);
-    if (role) metadata.updateUser(email, { role });
+    const updates = {};
+    if (role) updates.role = role;
+    if (quota !== undefined) updates.quota = Number(quota);
+    if (Object.keys(updates).length > 0) metadata.updateUser(email, updates);
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to update user' });
@@ -202,6 +230,31 @@ app.delete('/api/admin/users', authenticateAdmin, (req, res) => {
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete user' });
   }
+});
+
+// User Storage Info
+app.post('/api/user/storage', async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email) return res.status(400).json({ error: 'Email is required' });
+    
+    const userMeta = metadata.getUser(email);
+    const domain = email.includes('@') ? email.split('@')[1] : DEFAULT_DOMAIN;
+    const userPart = email.split('@')[0];
+    const userMailPath = `/var/mail/${domain}/${userPart}`;
+    
+    const used = metadata.getDirectorySize(userMailPath);
+    res.json({ used, quota: userMeta.quota || 10 });
+  } catch (err) {
+    console.error('Storage API Error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Total Storage
+app.get('/api/admin/storage', authenticateAdmin, (req, res) => {
+  const totalUsed = metadata.getDirectorySize('/var/mail');
+  res.json({ totalUsed });
 });
 
 // Webmail: Fetch Emails (IMAP)
@@ -240,8 +293,12 @@ app.post('/api/mail/list', async (req, res) => {
       }
       messages.sort((a, b) => new Date(b.date) - new Date(a.date));
     } else {
-      // Find the actual folder path from the list (case-insensitive)
-      const target = allFolders.find(f => f.name.toLowerCase() === folder.toLowerCase() || f.path.toLowerCase() === folder.toLowerCase()) || { path: folder };
+      // Find the actual folder path from the list (more resiliently)
+      const target = allFolders.find(f => 
+        f.name.toLowerCase() === folder.toLowerCase() || 
+        f.path.toLowerCase() === folder.toLowerCase() ||
+        (folder.toLowerCase() === 'inbox' && f.path.toUpperCase() === 'INBOX')
+      ) || { path: folder };
       
       if (['Sent', 'Trash'].includes(target.path)) {
         try { await client.mailboxCreate(target.path); } catch(e) {}
@@ -249,7 +306,7 @@ app.post('/api/mail/list', async (req, res) => {
 
       const lock = await client.getMailboxLock(target.path);
       try {
-        const uids = await client.search({}); // Use empty object instead of 'ALL' for consistency
+        const uids = await client.search({ all: true }); // Use all: true for broader compatibility
         if (uids.length > 0) {
           const lastUids = uids.slice(-50);
           for await (let msg of client.fetch(lastUids, { envelope: true, flags: true })) {
@@ -289,7 +346,8 @@ app.post('/api/mail/folders', async (req, res) => {
     await client.logout();
     res.json(folders.map(f => ({ path: f.path, name: f.name })));
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error(`IMAP Folders Error for ${email}:`, err);
+    res.status(500).json({ error: err.message, stack: err.stack });
   }
 });
 
@@ -473,22 +531,38 @@ app.post('/api/mail/delete', async (req, res) => {
   }
 });
 
+// User: Update Signature
+app.post('/api/user/signature', (req, res) => {
+  let { email, signature } = req.body;
+  email = normalizeEmail(email);
+  metadata.updateUser(email, { signature });
+  res.json({ success: true });
+});
+
 // Webmail: Send Email (SMTP + Append to Sent)
-app.post('/api/mail/send', async (req, res) => {
-  let { auth, email, password, to, subject, body } = req.body;
-  const userEmail = normalizeEmail(email || auth?.email);
-  const userPass = password || auth?.password;
+app.post('/api/mail/send', upload.array('attachments'), async (req, res) => {
+  let { email, password, to, subject, body } = req.body;
+  const userEmail = normalizeEmail(email);
+  const userPass = password;
   
   let transporter = nodemailer.createTransport({
     host: process.env.MAIL_SERVER_HOST || 'mailserver',
     port: 587, secure: false, auth: { user: userEmail, pass: userPass },
-    tls: { rejectUnauthorized: false }, ignoreTLS: true
+    tls: { rejectUnauthorized: false }
   });
 
   try {
+    const attachments = req.files?.map(file => ({
+      filename: file.originalname,
+      content: file.buffer,
+      contentType: file.mimetype
+    })) || [];
+
     const mailOptions = {
-      from: auth.email, to, subject, text: body, html: `<div>${body}</div>`
+      from: userEmail, to, subject, text: body, html: `<div>${body.replace(/\n/g, '<br>')}</div>`,
+      attachments
     };
+    
     let info = await transporter.sendMail(mailOptions);
     
     // Append to Sent folder
@@ -501,7 +575,6 @@ app.post('/api/mail/send', async (req, res) => {
     try {
       // Create raw message for appending
       const raw = await new Promise(async (resolve, reject) => {
-        let chunks = [];
         const mail = require('nodemailer/lib/mail-composer');
         new mail(mailOptions).compile().build((err, message) => {
           if (err) reject(err);
@@ -518,6 +591,7 @@ app.post('/api/mail/send', async (req, res) => {
 
     res.json({ success: true });
   } catch (err) {
+    console.error('Send error:', err);
     res.status(500).json({ error: err.message });
   }
 });
