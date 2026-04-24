@@ -11,7 +11,7 @@ Designed for ease of deployment and rich user experience, LifeMail provides a se
 ### 1. Initialization
 Run the setup script to prepare the directory structure (no host-side Node.js required):
 ```bash
-cd c:/Users/Noel/.gemini/lifemail/
+cd lifemail/
 bash setup.sh
 ```
 
