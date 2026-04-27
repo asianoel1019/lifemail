@@ -26,10 +26,9 @@ docker-compose up -d --build
 ### 3. Management Access
 Initially, use the **Admin Console** to configure your domain and users:
 1. Open [http://localhost:3000](http://localhost:3000).
-2. Click **"Admin Console"** on the login screen.
-3. Login with default credentials: `admin` / `admin123`.
-4. Go to **System Setting** to set your `@defaultDomain`.
-5. Go to **Accounts** to provision your first user.
+2. Login with default credentials: `admin` / `admin123`.
+3. Go to **System Setting** to set your `@defaultDomain`.
+4. Go to **Accounts** to provision your first user.
 
 ---
 
@@ -71,4 +70,3 @@ Initially, use the **Admin Console** to configure your domain and users:
 | **Persistence** | ✅ Verified | Automatic volume recovery on reboot. |
 
 ---
-*Developed by Antigravity - Modernizing the Self-Hosted Web.*

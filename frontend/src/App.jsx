@@ -5,12 +5,14 @@ import {
   Menu, Users, Shield, LayoutDashboard,
   ChevronRight, ArrowLeft, RefreshCw, LogOut,
   Palette, Lock, Eye, EyeOff, Edit2, Paperclip, Download,
-  Reply, ReplyAll, Forward, Loader2, Image
+  Reply, ReplyAll, Forward, Loader2, Image, Info,
+  UserPlus, UserMinus, Contact
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import axios from 'axios';
 
 const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:3001') + '/api';
+const axiosInstance = axios.create({ timeout: 35000 }); // 35s timeout
 
 const ThemeContext = createContext();
 
@@ -25,25 +27,49 @@ export default function App() {
   });
   const [emails, setEmails] = useState([]);
   const [selectedEmail, setSelectedEmail] = useState(null);
+  const [selectedUids, setSelectedUids] = useState([]);
+  const [previewUid, setPreviewUid] = useState(null);
+  const [lastSelectedUid, setLastSelectedUid] = useState(null);
   const [loading, setLoading] = useState(false);
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'serious');
   const [unreadCount, setUnreadCount] = useState(0);
   const [folders, setFolders] = useState([]);
   const [storage, setStorage] = useState({ used: 0, quota: 10 });
   const [error, setError] = useState(null);
+  const [contacts, setContacts] = useState([]);
+
+  useEffect(() => {
+    const init = async () => {
+      if (user) {
+        await fetchFolders();
+        await fetchStorage();
+        await fetchContacts();
+      }
+    };
+    init();
+  }, [user]);
+
+  const fetchContacts = async () => {
+    if (!user) return;
+    try {
+      const res = await axiosInstance.get(`${API_BASE}/user/contacts?email=${user.email}`);
+      setContacts(res.data);
+    } catch (err) { console.error('Fetch Contacts Error:', err); }
+  };
 
   useEffect(() => {
     if (user) {
+      setEmails([]);
+      setSelectedUids([]);
+      setPreviewUid(null);
       fetchEmails();
-      fetchFolders();
-      fetchStorage();
     }
-  }, [user, view]);
+  }, [view]);
 
   const fetchStorage = async () => {
     if (!user) return;
     try {
-      const res = await axios.post(`${API_BASE}/user/storage`, { email: user.email });
+      const res = await axiosInstance.post(`${API_BASE}/user/storage`, { email: user.email });
       setStorage(res.data);
     } catch (err) { console.error('Fetch Storage Error:', err); }
   };
@@ -52,7 +78,7 @@ export default function App() {
     setTheme(newTheme);
     localStorage.setItem('theme', newTheme);
     if (user) {
-      axios.post(`${API_BASE}/user/theme`, { email: user.email, theme: newTheme }).catch(console.error);
+      axiosInstance.post(`${API_BASE}/user/theme`, { email: user.email, theme: newTheme }).catch(console.error);
     }
   };
 
@@ -61,13 +87,19 @@ export default function App() {
   }, [theme]);
 
   const fetchEmails = async () => {
-    if (!user || ['admin', 'system_config', 'security', 'settings', 'compose', 'read'].includes(view)) return;
+    if (!user || ['admin', 'system_config', 'security', 'settings', 'compose', 'read', 'version', 'contacts'].includes(view)) return;
+    const password = localStorage.getItem('userPass');
+    if (!password) {
+      setUser(null);
+      localStorage.clear();
+      return;
+    }
     setLoading(true);
     try {
       const folderParam = view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view;
-      const res = await axios.post(`${API_BASE}/mail/list`, {
+      const res = await axiosInstance.post(`${API_BASE}/mail/list`, {
         email: user.email,
-        password: localStorage.getItem('userPass'),
+        password: password,
         folder: folderParam,
         starredOnly: view === 'starred'
       });
@@ -79,7 +111,7 @@ export default function App() {
       }
     } catch (err) {
       console.error('Fetch Emails Error:', err);
-      setError('Connection to mail server lost or credentials invalid.');
+      setError(err.response?.data?.error || 'Connection to mail server failed.');
     } finally {
       setLoading(false);
     }
@@ -87,15 +119,17 @@ export default function App() {
 
   const fetchFolders = async () => {
     if (!user) return;
+    const password = localStorage.getItem('userPass');
+    if (!password) return;
     try {
-      const res = await axios.post(`${API_BASE}/mail/folders`, {
-        email: user.email, password: localStorage.getItem('userPass')
+      const res = await axiosInstance.post(`${API_BASE}/mail/folders`, {
+        email: user.email, password: password
       });
       setFolders(Array.isArray(res.data) ? res.data : []);
       setError(null);
     } catch (err) { 
       console.error('Fetch Folders Error:', err);
-      setError('Failed to sync folders.');
+      setError(err.response?.data?.error || 'Failed to sync folders.');
     }
   };
 
@@ -103,7 +137,7 @@ export default function App() {
     const name = prompt('Enter new folder name:');
     if (!name) return;
     try {
-      await axios.post(`${API_BASE}/mail/folders/create`, {
+      await axiosInstance.post(`${API_BASE}/mail/folders/create`, {
         email: user.email, password: localStorage.getItem('userPass'), folderName: name
       });
       fetchFolders();
@@ -112,10 +146,12 @@ export default function App() {
 
   const moveEmail = async (uid, sourceFolder, targetFolder) => {
     try {
-      await axios.post(`${API_BASE}/mail/move`, {
+      await axiosInstance.post(`${API_BASE}/mail/move`, {
         email: user.email, password: localStorage.getItem('userPass'),
         uid, sourceFolder, targetFolder
       });
+      setSelectedUids([]);
+      setPreviewUid(null);
       fetchEmails();
       fetchFolders();
     } catch (err) { alert('Failed to move email: ' + err.message); }
@@ -123,7 +159,7 @@ export default function App() {
 
   const handleLogin = async (email, password) => {
     try {
-      const res = await axios.post(`${API_BASE}/auth/login`, { email, password });
+      const res = await axiosInstance.post(`${API_BASE}/auth/login`, { email, password });
       setUser(res.data);
       if (res.data.theme) setTheme(res.data.theme);
       localStorage.setItem('user', JSON.stringify(res.data));
@@ -131,6 +167,43 @@ export default function App() {
     } catch (err) {
       alert('Login failed: ' + (err.response?.data?.error || err.message));
     }
+  };
+
+  const handleMailClick = (email, e) => {
+    const uid = email.uid;
+    if (e.ctrlKey || e.metaKey) {
+      setSelectedUids(prev => prev.includes(uid) ? prev.filter(id => id !== uid) : [...prev, uid]);
+      setLastSelectedUid(uid);
+    } else if (e.shiftKey && lastSelectedUid) {
+      const uids = emails.map(m => m.uid);
+      const start = uids.indexOf(lastSelectedUid);
+      const end = uids.indexOf(uid);
+      const range = uids.slice(Math.min(start, end), Math.max(start, end) + 1);
+      setSelectedUids(Array.from(new Set([...selectedUids, ...range])));
+    } else {
+      setSelectedUids([uid]);
+      setPreviewUid(uid);
+      setLastSelectedUid(uid);
+    }
+  };
+
+  const handleMailDoubleClick = (email) => {
+    const sourceFolder = email.folder || (view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view);
+    setSelectedEmail({ ...email, folder: sourceFolder }); 
+    setView('read'); 
+    setPreviewUid(null);
+  };
+
+  const handleDeleteSelected = async () => {
+    if (selectedUids.length === 0) return;
+    if (!window.confirm(`Delete ${selectedUids.length} selected messages?`)) return;
+    try {
+      const folder = view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view;
+      await axiosInstance.post(`${API_BASE}/mail/delete`, { email: user.email, password: localStorage.getItem('userPass'), uid: selectedUids, folder });
+      setSelectedUids([]);
+      setPreviewUid(null);
+      fetchEmails();
+    } catch (err) { alert('Batch delete failed: ' + err.message); }
   };
 
   const logout = () => {
@@ -176,12 +249,13 @@ export default function App() {
               active={view === 'starred'} 
               onClick={() => setView('starred')} 
               onDrop={async (uid, src) => {
-                await axios.post(`${API_BASE}/mail/toggle-star`, { email: user.email, password: localStorage.getItem('userPass'), uid, starred: true, folder: src });
+                await axiosInstance.post(`${API_BASE}/mail/toggle-star`, { email: user.email, password: localStorage.getItem('userPass'), uid, starred: true, folder: src });
                 fetchEmails();
               }} 
             />
             <NavItem icon={<Send />} label="Sent" active={view === 'sent'} onClick={() => setView('sent')} onDrop={(uid, src) => moveEmail(uid, src, 'Sent')} />
             <NavItem icon={<Trash2 />} label="Trash" active={view === 'trash'} onClick={() => setView('trash')} onDrop={(uid, src) => moveEmail(uid, src, 'Trash')} />
+            <NavItem icon={<Users />} label="Contacts" active={view === 'contacts'} onClick={() => setView('contacts')} />
             
             <div className="pt-6 pb-2 px-2 flex items-center justify-between group">
               <span className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest">My Folders</span>
@@ -227,9 +301,12 @@ export default function App() {
               />
             </div>
             <div className="flex items-center gap-4 text-[var(--text-muted)]">
+              {selectedUids.length > 1 && (
+                <button onClick={handleDeleteSelected} className="flex items-center gap-2 px-3 py-1.5 bg-red-500/10 text-red-500 rounded-lg hover:bg-red-500/20 transition-all text-xs font-bold">
+                  <Trash2 size={14} /> Delete ({selectedUids.length})
+                </button>
+              )}
               <button onClick={fetchEmails} className="hover:text-[var(--text-main)] transition-colors"><RefreshCw size={18} className={loading ? 'animate-spin' : ''} /></button>
-              <div className="w-[1px] h-4 bg-[var(--border)]"></div>
-              <button onClick={() => setView('settings')} className="hover:text-[var(--text-main)] transition-colors"><Settings size={20} /></button>
             </div>
           </header>
 
@@ -241,41 +318,53 @@ export default function App() {
               </div>
             )}
             <AnimatePresence mode="wait">
-              {!['admin', 'system_config', 'security', 'settings', 'compose', 'read'].includes(view) && (
+              {!['admin', 'system_config', 'security', 'settings', 'compose', 'read', 'version', 'contacts'].includes(view) && (
                 <motion.div 
                   key={view} 
                   initial={{ opacity: 0, y: 10 }} 
                   animate={{ opacity: 1, y: 0 }} 
                   exit={{ opacity: 0, y: -10 }} 
-                  className="divide-y divide-[var(--border)]"
+                  className={`flex h-full ${previewUid ? 'divide-x divide-[var(--border)]' : ''}`}
                 >
-                  {emails.length === 0 ? (
-                    <EmptyState label={loading ? "Synchronizing..." : `No messages in ${view}`} />
-                  ) : (
-                    emails.map(email => (
-                      <EmailRow 
-                        key={email.uid} 
-                        email={email} 
-                        currentFolder={view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view}
-                        onClick={() => { 
-                          const sourceFolder = email.folder || (view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view);
-                          setSelectedEmail({ ...email, folder: sourceFolder }); 
-                          setView('read'); 
-                        }}
-                        onDelete={async (e) => {
-                          e.stopPropagation();
-                          const currentFolder = email.folder || (view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view);
-                          await axios.post(`${API_BASE}/mail/delete`, { email: user.email, password: localStorage.getItem('userPass'), uid: email.uid, folder: currentFolder });
-                          fetchEmails();
-                        }}
-                        onStar={async (e) => {
-                          e.stopPropagation();
-                          const currentFolder = email.folder || (view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view);
-                          await axios.post(`${API_BASE}/mail/toggle-star`, { email: user.email, password: localStorage.getItem('userPass'), uid: email.uid, starred: !email.starred, folder: currentFolder });
-                          fetchEmails();
-                        }}
+                  <div className={`${previewUid ? 'w-1/2' : 'w-full'} overflow-y-auto custom-scrollbar divide-y divide-[var(--border)]`}>
+                    {emails.length === 0 ? (
+                      <EmptyState label={loading ? "Synchronizing..." : `No messages in ${view}`} />
+                    ) : (
+                      emails.map(email => (
+                        <EmailRow 
+                          key={email.uid} 
+                          email={email} 
+                          isSelected={selectedUids.includes(email.uid)}
+                          currentFolder={view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view}
+                          onClick={(e) => handleMailClick(email, e)}
+                          onDoubleClick={() => handleMailDoubleClick(email)}
+                          onDelete={async (e) => {
+                            e.stopPropagation();
+                            const currentFolder = email.folder || (view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view);
+                            await axiosInstance.post(`${API_BASE}/mail/delete`, { email: user.email, password: localStorage.getItem('userPass'), uid: email.uid, folder: currentFolder });
+                            fetchEmails();
+                          }}
+                          onStar={async (e) => {
+                            e.stopPropagation();
+                            const currentFolder = email.folder || (view === 'sent' ? 'Sent' : view === 'trash' ? 'Trash' : (view === 'inbox' || view === 'starred') ? 'INBOX' : view);
+                            await axiosInstance.post(`${API_BASE}/mail/toggle-star`, { email: user.email, password: localStorage.getItem('userPass'), uid: email.uid, starred: !email.starred, folder: currentFolder });
+                            fetchEmails();
+                          }}
+                          selectedUids={selectedUids}
+                        />
+                      ))
+                    )}
+                  </div>
+                  {previewUid && (
+                    <div className="w-1/2 overflow-hidden bg-[var(--bg-main)]">
+                      <PreviewPane 
+                        uid={previewUid} 
+                        email={emails.find(e => e.uid === previewUid)}
+                        user={user} 
+                        onClose={() => setPreviewUid(null)}
+                        onFullOpen={() => handleMailDoubleClick(emails.find(e => e.uid === previewUid))}
                       />
-                    ))
+                    </div>
                   )}
                 </motion.div>
               )}
@@ -309,13 +398,23 @@ export default function App() {
                 <motion.div key={`read-${selectedEmail?.uid}`} initial={{ opacity: 0, x: 50 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -50 }} className="h-full">
                   <ReadView email={selectedEmail} user={user} onBack={() => setView('inbox')} onDelete={async () => {
                     if (!window.confirm('Delete this message?')) return;
-                    await axios.post(`${API_BASE}/mail/delete`, { email: user.email, password: localStorage.getItem('userPass'), uid: selectedEmail.uid, folder: selectedEmail.folder });
+                    await axiosInstance.post(`${API_BASE}/mail/delete`, { email: user.email, password: localStorage.getItem('userPass'), uid: selectedEmail.uid, folder: selectedEmail.folder });
                     setView('inbox');
                     fetchEmails();
                   }} onAction={(type, data) => {
                     setComposeData(data);
                     setView('compose');
                   }} />
+                </motion.div>
+              )}
+              {view === 'version' && (
+                <motion.div key="version" initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, scale: 1.05 }} className="h-full">
+                  <VersionPanel />
+                </motion.div>
+              )}
+              {view === 'contacts' && (
+                <motion.div key="contacts" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="h-full">
+                  <ContactsPanel user={user} contacts={contacts} onUpdate={fetchContacts} />
                 </motion.div>
               )}
             </AnimatePresence>
@@ -339,7 +438,8 @@ function NavItem({ icon, label, active, onClick, count, onDrop }) {
         setIsOver(false);
         try {
           const data = JSON.parse(e.dataTransfer.getData('email'));
-          onDrop(data.uid, data.folder, label);
+          const uids = data.selectedUids && data.selectedUids.includes(data.uid) ? data.selectedUids : [data.uid];
+          onDrop(uids, data.folder, label);
         } catch (err) { console.error('Drop error:', err); }
       }}
       className={`w-full flex items-center justify-between px-4 py-3 rounded-[var(--radius)] transition-all duration-200 group ${
@@ -392,6 +492,9 @@ function UserProfile({ user, logout, setView }) {
             <button onClick={() => { setView('security'); setOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[var(--bg-main)] rounded-lg transition-colors font-bold">
               <Lock size={14} /> Security
             </button>
+            <button onClick={() => { setView('version'); setOpen(false); }} className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-[var(--bg-main)] rounded-lg transition-colors font-bold">
+              <Info size={14} /> Version
+            </button>
             <div className="h-[1px] bg-[var(--border)] my-1"></div>
             <button onClick={logout} className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-500 hover:bg-red-500/10 rounded-lg transition-colors font-bold">
               <LogOut size={14} /> Sign Out
@@ -403,25 +506,26 @@ function UserProfile({ user, logout, setView }) {
   );
 }
 
-function EmailRow({ email, onClick, onDelete, onStar, currentFolder }) {
+function EmailRow({ email, onClick, onDoubleClick, onDelete, onStar, currentFolder, isSelected, selectedUids }) {
   return (
     <div 
       draggable
       onDragStart={(e) => {
-        e.dataTransfer.setData('email', JSON.stringify({ uid: email.uid, folder: currentFolder }));
+        e.dataTransfer.setData('email', JSON.stringify({ uid: email.uid, folder: currentFolder, selectedUids }));
       }}
       onClick={onClick}
-      className={`flex items-center gap-4 px-6 py-4 hover:bg-[var(--bg-surface)] cursor-pointer transition-colors group border-l-4 ${email.seen ? 'border-transparent' : 'border-[var(--primary)]'}`}
+      onDoubleClick={onDoubleClick}
+      className={`flex items-center gap-4 px-6 py-4 hover:bg-[var(--bg-surface)] cursor-pointer transition-colors group border-l-4 ${isSelected ? 'bg-[var(--primary)]/10 border-[var(--primary)]' : email.seen ? 'border-transparent' : 'border-[var(--primary)]'}`}
     >
-      <div className={`w-10 h-10 rounded-[var(--radius)] flex items-center justify-center font-bold transition-colors ${email.seen ? 'bg-[var(--bg-input)] text-[var(--text-muted)]' : 'bg-[var(--primary)] text-white shadow-md'}`}>
+      <div className={`w-10 h-10 rounded-[var(--radius)] flex items-center justify-center font-bold transition-colors ${isSelected ? 'bg-[var(--primary)] text-white' : email.seen ? 'bg-[var(--bg-input)] text-[var(--text-muted)]' : 'bg-[var(--primary)] text-white shadow-md'}`}>
         {email.from ? email.from.charAt(0).toUpperCase() : '?'}
       </div>
       <div className="flex-1 min-w-0">
         <div className="flex justify-between mb-1">
-          <h4 className={`text-sm truncate pr-4 ${email.seen ? 'font-medium' : 'font-black'}`}>{email.from}</h4>
+          <h4 className={`text-sm truncate pr-4 ${email.seen ? 'font-medium' : 'font-black'} ${isSelected ? 'text-[var(--primary)]' : ''}`}>{email.from}</h4>
           <span className="text-[10px] font-bold text-[var(--text-muted)] uppercase">{email.date ? new Date(email.date).toLocaleDateString() : ''}</span>
         </div>
-        <p className={`text-xs truncate mb-0.5 ${email.seen ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)] font-bold'}`}>{email.subject || '(No Subject)'}</p>
+        <p className={`text-xs truncate mb-0.5 ${isSelected ? 'text-[var(--text-main)] font-medium' : email.seen ? 'text-[var(--text-muted)]' : 'text-[var(--text-main)] font-bold'}`}>{email.subject || '(No Subject)'}</p>
       </div>
       <div className="opacity-0 group-hover:opacity-100 flex items-center gap-2 transition-opacity">
         <button 
@@ -436,6 +540,78 @@ function EmailRow({ email, onClick, onDelete, onStar, currentFolder }) {
   );
 }
 
+function PreviewPane({ uid, email, user, onClose, onFullOpen }) {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!email || !uid) return;
+    const load = async () => {
+      setLoading(true);
+      setData(null);
+      try {
+        const sourceFolder = email.folder || 'INBOX';
+        const res = await axiosInstance.post(`${API_BASE}/mail/fetch`, {
+          email: user.email, password: localStorage.getItem('userPass'), uid, folder: sourceFolder
+        });
+        setData(res.data);
+      } catch (err) { 
+        console.error('Preview fetch error:', err);
+        setData({ text: 'Error loading content. Please try again.' });
+      }
+      finally { setLoading(false); }
+    };
+    load();
+  }, [uid, email?.folder]);
+
+  if (!email) return null;
+
+  return (
+    <div className="flex flex-col h-full bg-[var(--bg-surface)]">
+      <div className="flex items-center justify-between p-4 border-b border-[var(--border)] bg-[var(--bg-sidebar)]/30">
+        <div className="flex items-center gap-2">
+           <button onClick={onFullOpen} className="p-2 rounded-lg hover:bg-[var(--bg-surface)] text-[var(--primary)] transition-all flex items-center gap-1 text-xs font-bold">
+             <Eye size={14} /> Full View
+           </button>
+        </div>
+        <button onClick={onClose} className="p-2 rounded-lg hover:bg-[var(--bg-surface)] text-[var(--text-muted)] transition-all">
+          <ChevronRight size={20} />
+        </button>
+      </div>
+      
+      <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+        {loading ? (
+          <div className="flex items-center justify-center h-full">
+            <Loader2 className="w-6 h-6 animate-spin text-[var(--primary)]" />
+          </div>
+        ) : (
+          <div className="space-y-6">
+            <h2 className="text-xl font-bold text-[var(--text-main)]">{email?.subject || '(No Subject)'}</h2>
+            <div className="flex items-center gap-3 pb-4 border-b border-[var(--border)]">
+              <div className="w-10 h-10 rounded-[var(--radius)] bg-[var(--primary)] flex items-center justify-center text-white font-black">
+                {email?.from ? email.from[0].toUpperCase() : '?'}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-bold truncate">{email?.from}</div>
+                <div className="text-[10px] text-[var(--text-muted)] font-bold">{email?.date ? new Date(email.date).toLocaleString() : ''}</div>
+              </div>
+            </div>
+            <div className="text-sm text-[var(--text-main)] leading-relaxed">
+              {data?.html ? (
+                <div dangerouslySetInnerHTML={{ __html: data.html }} />
+              ) : data?.text ? (
+                <div className="whitespace-pre-wrap">{data.text}</div>
+              ) : (
+                <div className="text-[var(--text-muted)] italic py-10 text-center">No content available for this message.</div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ReadView({ email, user, onBack, onDelete, onAction }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -443,7 +619,7 @@ function ReadView({ email, user, onBack, onDelete, onAction }) {
   useEffect(() => {
     const load = async () => {
       try {
-        const res = await axios.post(`${API_BASE}/mail/fetch`, {
+        const res = await axiosInstance.post(`${API_BASE}/mail/fetch`, {
           email: user.email, password: localStorage.getItem('userPass'), uid: email.uid, folder: email.folder || 'INBOX'
         });
         setData(res.data);
@@ -560,7 +736,7 @@ function SettingsView({ user, setUser, theme, setTheme, storage }) {
   const saveSignature = async () => {
     setSaving(true);
     try {
-      await axios.post(`${API_BASE}/user/signature`, { email: user.email, signature });
+      await axiosInstance.post(`${API_BASE}/user/signature`, { email: user.email, signature });
       const newUser = { ...user, signature };
       setUser(newUser);
       localStorage.setItem('user', JSON.stringify(newUser));
@@ -647,21 +823,21 @@ function SystemConfigPanel() {
 
   const fetchConfig = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/admin/config`, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
+      const res = await axiosInstance.get(`${API_BASE}/admin/config`, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
       setConfig(res.data);
     } catch (err) { console.error(err); }
   };
 
   const fetchTotalStorage = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/admin/storage`, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
+      const res = await axiosInstance.get(`${API_BASE}/admin/storage`, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
       setTotalStorage(res.data.totalUsed);
     } catch (err) { console.error(err); }
   };
 
   const updateConfig = async () => {
     try {
-      await axios.patch(`${API_BASE}/admin/config`, config, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
+      await axiosInstance.patch(`${API_BASE}/admin/config`, config, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
       alert('System configuration updated!');
     } catch (err) { alert('Failed to update config'); }
   };
@@ -728,7 +904,7 @@ function AdminPanel() {
 
   const fetchUsers = async () => {
     try {
-      const res = await axios.get(`${API_BASE}/admin/users`, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
+      const res = await axiosInstance.get(`${API_BASE}/admin/users`, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
       setUsers(res.data);
     } catch (err) { console.error(err); }
   };
@@ -736,7 +912,7 @@ function AdminPanel() {
   const addUser = async (e) => {
     e.preventDefault();
     try {
-      await axios.post(`${API_BASE}/admin/users`, { email: newEmail, password: newPass, role: newRole, quota: newQuota }, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
+      await axiosInstance.post(`${API_BASE}/admin/users`, { email: newEmail, password: newPass, role: newRole, quota: newQuota }, { headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } });
       setNewEmail(''); setNewPass(''); setNewQuota(10); fetchUsers();
     } catch (err) { alert(err.message); }
   };
@@ -744,7 +920,7 @@ function AdminPanel() {
   const deleteUser = async (email) => {
     if (!window.confirm(`Are you sure you want to delete ${email}?`)) return;
     try {
-      await axios.delete(`${API_BASE}/admin/users`, { 
+      await axiosInstance.delete(`${API_BASE}/admin/users`, { 
         data: { email },
         headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } 
       });
@@ -755,7 +931,7 @@ function AdminPanel() {
   const updateUser = async (e) => {
     e.preventDefault();
     try {
-      await axios.patch(`${API_BASE}/admin/users`, editingUser, { 
+      await axiosInstance.patch(`${API_BASE}/admin/users`, editingUser, { 
         headers: { Authorization: `Bearer ${JSON.parse(localStorage.getItem('user')).token}` } 
       });
       setEditingUser(null);
@@ -838,6 +1014,163 @@ function AdminPanel() {
   );
 }
 
+function ContactsPanel({ user, contacts, onUpdate }) {
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [adding, setAdding] = useState(false);
+
+  const handleAdd = async (e) => {
+    e.preventDefault();
+    if (!name || !email) return;
+    try {
+      await axiosInstance.post(`${API_BASE}/user/contacts`, {
+        email: user.email,
+        contact: { name, email }
+      });
+      setName(''); setEmail(''); setAdding(false);
+      onUpdate();
+    } catch (err) { console.error(err); }
+  };
+
+  const handleDelete = async (contactEmail) => {
+    try {
+      await axiosInstance.delete(`${API_BASE}/user/contacts`, {
+        data: { email: user.email, contactEmail }
+      });
+      onUpdate();
+    } catch (err) { console.error(err); }
+  };
+
+  return (
+    <div className="h-full flex flex-col bg-[var(--bg-main)]">
+      <header className="p-8 pb-4 flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-black tracking-tight">Contacts</h1>
+          <p className="text-sm text-[var(--text-muted)] font-medium">{contacts.length} people connected</p>
+        </div>
+        <button 
+          onClick={() => setAdding(!adding)}
+          className="flex items-center gap-2 bg-[var(--primary)] text-white px-5 py-2.5 rounded-xl font-bold shadow-lg shadow-blue-500/20 active:scale-95 transition-all"
+        >
+          {adding ? 'Cancel' : <><UserPlus size={18} /> Add Contact</>}
+        </button>
+      </header>
+
+      <div className="flex-1 overflow-hidden p-8 pt-4">
+        {adding && (
+          <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} className="bg-[var(--bg-surface)] p-6 rounded-2xl border border-[var(--border)] shadow-xl mb-8">
+            <form onSubmit={handleAdd} className="flex flex-wrap gap-4 items-end">
+              <div className="flex-1 min-w-[200px] space-y-2">
+                <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">Full Name</label>
+                <input value={name} onChange={e => setName(e.target.value)} placeholder="John Doe" className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--primary)] outline-none" required />
+              </div>
+              <div className="flex-1 min-w-[200px] space-y-2">
+                <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">Email Address</label>
+                <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="john@example.com" className="w-full bg-[var(--bg-input)] border border-[var(--border)] rounded-xl px-4 py-3 text-sm focus:ring-2 focus:ring-[var(--primary)] outline-none" required />
+              </div>
+              <button className="bg-[var(--primary)] text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-blue-500/20 active:scale-95 transition-all">Save Contact</button>
+            </form>
+          </motion.div>
+        )}
+
+        <div className="bg-[var(--bg-surface)] rounded-2xl border border-[var(--border)] overflow-hidden shadow-xl">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left">
+              <thead>
+                <tr className="border-b border-[var(--border)] bg-[var(--bg-main)]/50">
+                  <th className="px-6 py-4 text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest">Contact</th>
+                  <th className="px-6 py-4 text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest">Email</th>
+                  <th className="px-6 py-4 text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--border)]">
+                {contacts.length === 0 ? (
+                  <tr>
+                    <td colSpan="3" className="px-6 py-12 text-center text-[var(--text-muted)] font-medium italic">No contacts yet. Start by adding one!</td>
+                  </tr>
+                ) : (
+                  contacts.map(c => (
+                    <tr key={c.email} className="hover:bg-[var(--bg-main)]/50 transition-colors group">
+                      <td className="px-6 py-4">
+                        <div className="flex items-center gap-3">
+                          <div className="w-8 h-8 rounded-full bg-[var(--primary)]/10 text-[var(--primary)] flex items-center justify-center font-bold text-xs">
+                            {c.name.charAt(0).toUpperCase()}
+                          </div>
+                          <span className="font-bold text-sm">{c.name}</span>
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 text-sm font-medium text-[var(--text-muted)]">{c.email}</td>
+                      <td className="px-6 py-4 text-right">
+                        <button 
+                          onClick={() => handleDelete(c.email)}
+                          className="p-2 text-[var(--text-muted)] hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all opacity-0 group-hover:opacity-100"
+                        >
+                          <UserMinus size={18} />
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function VersionPanel() {
+  const [info, setInfo] = useState({ version: 'Loading...', notes: [] });
+
+  useEffect(() => {
+    fetch('/version.txt')
+      .then(r => r.text())
+      .then(t => {
+        const lines = t.split('\n').filter(l => l.trim());
+        setInfo({
+          version: lines[0],
+          notes: lines.slice(1)
+        });
+      })
+      .catch(e => console.error('Failed to load version info:', e));
+  }, []);
+
+  return (
+    <div className="h-full flex flex-col items-center justify-center p-8 text-center space-y-6 bg-[var(--bg-main)]">
+       <div className="w-20 h-20 bg-[var(--primary)] rounded-3xl flex items-center justify-center shadow-2xl shadow-blue-500/20 rotate-12 mb-2">
+          <Mail size={40} className="text-white" />
+       </div>
+       <div className="space-y-1">
+         <h1 className="text-3xl font-black tracking-tighter text-[var(--text-main)]">LifeMail</h1>
+         <p className="text-[var(--text-muted)] font-bold uppercase tracking-[0.2em] text-[9px]">Premium Webmail Experience</p>
+       </div>
+       <div className="px-6 py-1.5 bg-[var(--bg-surface)] border border-[var(--border)] rounded-full text-[11px] font-black text-[var(--primary)] shadow-sm">
+          {info.version}
+       </div>
+       
+       {info.notes.length > 0 && (
+         <div className="max-w-md w-full bg-[var(--bg-surface)] border border-[var(--border)] rounded-2xl p-6 text-left space-y-3 shadow-inner">
+           <p className="text-[10px] font-black uppercase tracking-widest text-[var(--text-muted)] border-b border-[var(--border)] pb-2">Release Notes</p>
+           <div className="max-h-40 overflow-y-auto custom-scrollbar text-xs text-[var(--text-muted)] font-medium leading-relaxed space-y-2 pr-2">
+             {info.notes.map((note, i) => (
+               <div key={i} className="flex gap-2">
+                 <span className="text-[var(--primary)]">•</span>
+                 <span>{note.startsWith('- ') ? note.substring(2) : note}</span>
+               </div>
+             ))}
+           </div>
+         </div>
+       )}
+
+       <div className="max-w-md text-[10px] text-[var(--text-muted)] font-medium leading-relaxed opacity-60">
+          &copy; 2026 LifeHub Ecosystem. All rights reserved.<br/>
+          Crafted with precision for the ultimate productivity.
+       </div>
+    </div>
+  );
+}
+
 function SecurityPanel() {
   const [oldPass, setOldPass] = useState('');
   const [newPass, setNewPass] = useState('');
@@ -846,7 +1179,7 @@ function SecurityPanel() {
   const changePassword = async (e) => {
     e.preventDefault();
     try {
-      await axios.post(`${API_BASE}/user/password`, { email: user.email, oldPassword: oldPass, newPassword: newPass });
+      await axiosInstance.post(`${API_BASE}/user/password`, { email: user.email, oldPassword: oldPass, newPassword: newPass });
       alert('Password changed successfully! Please login again.');
       localStorage.clear(); window.location.reload();
     } catch (err) {
@@ -936,7 +1269,28 @@ function ComposeView({ user, onCancel, onSent, initialData }) {
   const [body, setBody] = useState(initialData?.body || `\n\n${user.signature || ''}`);
   const [attachments, setAttachments] = useState([]);
   const [sending, setSending] = useState(false);
+  const [suggestions, setSuggestions] = useState([]);
+  const [contacts, setContacts] = useState([]);
   const fileInputRef = React.useRef();
+
+  useEffect(() => {
+    axiosInstance.get(`${API_BASE}/user/contacts?email=${user.email}`)
+      .then(res => setContacts(res.data))
+      .catch(console.error);
+  }, [user]);
+
+  const handleToChange = (val) => {
+    setTo(val);
+    if (!val) {
+      setSuggestions([]);
+      return;
+    }
+    const filtered = contacts.filter(c => 
+      c.name.toLowerCase().includes(val.toLowerCase()) || 
+      c.email.toLowerCase().includes(val.toLowerCase())
+    );
+    setSuggestions(filtered);
+  };
 
   const handleSend = async () => {
     if (!to || !subject) return;
@@ -950,7 +1304,7 @@ function ComposeView({ user, onCancel, onSent, initialData }) {
       formData.append('body', body);
       attachments.forEach(file => formData.append('attachments', file));
 
-      await axios.post(`${API_BASE}/mail/send`, formData);
+      await axiosInstance.post(`${API_BASE}/mail/send`, formData);
       onSent();
       onCancel();
     } catch (err) {
@@ -990,12 +1344,26 @@ function ComposeView({ user, onCancel, onSent, initialData }) {
         </div>
 
         <div className="space-y-4">
-          <div className="space-y-1">
+          <div className="relative space-y-1">
             <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">Recipient</label>
             <input 
-              type="text" placeholder="to@example.com" value={to} onChange={e => setTo(e.target.value)}
+              type="text" placeholder="to@example.com" value={to} onChange={e => handleToChange(e.target.value)}
               className="w-full bg-[var(--bg-input)] p-4 border border-[var(--border)] rounded-xl focus:outline-none focus:ring-2 focus:ring-[var(--primary)] transition-all font-bold"
             />
+            {suggestions.length > 0 && (
+              <div className="absolute top-full left-0 right-0 bg-[var(--bg-surface)] border border-[var(--border)] rounded-xl mt-1 shadow-2xl z-50 overflow-hidden max-h-48 overflow-y-auto">
+                {suggestions.map(c => (
+                  <button 
+                    key={c.email}
+                    onClick={() => { setTo(c.email); setSuggestions([]); }}
+                    className="w-full text-left px-4 py-3 hover:bg-[var(--bg-main)] flex flex-col gap-0.5 border-b border-[var(--border)] last:border-0"
+                  >
+                    <span className="font-bold text-sm">{c.name}</span>
+                    <span className="text-[10px] text-[var(--text-muted)] font-bold">{c.email}</span>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
           <div className="space-y-1">
             <label className="text-[10px] font-black text-[var(--text-muted)] uppercase tracking-widest ml-1">Subject Matter</label>

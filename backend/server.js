@@ -47,11 +47,11 @@ const metadata = {
   },
   getUser: (email) => {
     const data = metadata.load();
-    return data.users[email] || { role: 'user', theme: 'serious', quota: 10 };
+    return data.users[email] || { role: 'user', theme: 'serious', quota: 10, contacts: [] };
   },
   updateUser: (email, updates) => {
     const data = metadata.load();
-    data.users[email] = { ...(data.users[email] || { role: 'user', theme: 'serious', signature: '', quota: 10 }), ...updates };
+    data.users[email] = { ...(data.users[email] || { role: 'user', theme: 'serious', signature: '', quota: 10, contacts: [] }), ...updates };
     metadata.save(data);
   },
   getConfig: () => {
@@ -265,7 +265,7 @@ app.post('/api/mail/list', async (req, res) => {
   const client = new ImapFlow({
     host: process.env.MAIL_SERVER_HOST || 'mailserver',
     port: 143, secure: false, auth: { user: email, pass: password },
-    tls: { rejectUnauthorized: false }, ignoreTLS: true, logger: false,
+    tls: { rejectUnauthorized: false }, logger: false,
   });
 
   try {
@@ -293,7 +293,6 @@ app.post('/api/mail/list', async (req, res) => {
       }
       messages.sort((a, b) => new Date(b.date) - new Date(a.date));
     } else {
-      // Find the actual folder path from the list (more resiliently)
       const target = allFolders.find(f => 
         f.name.toLowerCase() === folder.toLowerCase() || 
         f.path.toLowerCase() === folder.toLowerCase() ||
@@ -306,9 +305,11 @@ app.post('/api/mail/list', async (req, res) => {
 
       const lock = await client.getMailboxLock(target.path);
       try {
-        const uids = await client.search({ all: true }); // Use all: true for broader compatibility
+        const uids = await client.search({ all: true });
+        console.log(`[IMAP] Found ${uids.length} UIDs in ${target.path} for ${email}`);
         if (uids.length > 0) {
           const lastUids = uids.slice(-50);
+          console.log(`[IMAP] Fetching envelopes for ${lastUids.length} messages...`);
           for await (let msg of client.fetch(lastUids, { envelope: true, flags: true })) {
             messages.push({
               uid: msg.uid, seq: msg.seq, subject: msg.envelope.subject,
@@ -317,16 +318,17 @@ app.post('/api/mail/list', async (req, res) => {
               folder: target.path
             });
           }
+          console.log(`[IMAP] Successfully fetched ${messages.length} messages.`);
         }
       } finally { lock.release(); }
       messages.reverse();
     }
-
-    await client.logout();
     res.json(messages);
   } catch (err) {
-    console.error(`IMAP List Error:`, err.message);
+    console.error(`[IMAP Error] List failed for ${email}:`, err.message);
     res.status(500).json({ error: err.message });
+  } finally {
+    try { await client.logout(); } catch (e) {}
   }
 });
 
@@ -337,17 +339,18 @@ app.post('/api/mail/folders', async (req, res) => {
   const client = new ImapFlow({
     host: process.env.MAIL_SERVER_HOST || 'mailserver',
     port: 143, secure: false, auth: { user: email, pass: password },
-    tls: { rejectUnauthorized: false }, ignoreTLS: true, logger: false,
+    tls: { rejectUnauthorized: false }, logger: false,
   });
 
   try {
     await client.connect();
     const folders = await client.list();
-    await client.logout();
     res.json(folders.map(f => ({ path: f.path, name: f.name })));
   } catch (err) {
     console.error(`IMAP Folders Error for ${email}:`, err);
     res.status(500).json({ error: err.message, stack: err.stack });
+  } finally {
+    try { await client.logout(); } catch (e) {}
   }
 });
 
@@ -358,16 +361,17 @@ app.post('/api/mail/folders/create', async (req, res) => {
   const client = new ImapFlow({
     host: process.env.MAIL_SERVER_HOST || 'mailserver',
     port: 143, secure: false, auth: { user: email, pass: password },
-    tls: { rejectUnauthorized: false }, ignoreTLS: true, logger: false,
+    tls: { rejectUnauthorized: false }, logger: false,
   });
 
   try {
     await client.connect();
     await client.mailboxCreate(folderName);
-    await client.logout();
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  } finally {
+    try { await client.logout(); } catch (e) {}
   }
 });
 
@@ -378,7 +382,7 @@ app.post('/api/mail/move', async (req, res) => {
   const client = new ImapFlow({
     host: process.env.MAIL_SERVER_HOST || 'mailserver',
     port: 143, secure: false, auth: { user: email, pass: password },
-    tls: { rejectUnauthorized: false }, ignoreTLS: true, logger: false,
+    tls: { rejectUnauthorized: false }, logger: false,
   });
 
   try {
@@ -386,14 +390,17 @@ app.post('/api/mail/move', async (req, res) => {
     const mailbox = await client.getMailboxLock(sourceFolder);
     try {
       await client.mailboxCreate(targetFolder); // Ensure target exists
-      await client.messageMove(uid.toString(), targetFolder, { uid: true });
+      const uidSeq = Array.isArray(uid) ? uid.join(',') : uid?.toString();
+      if (!uidSeq) return res.status(400).json({ error: 'No UIDs provided' });
+      await client.messageMove(uidSeq, targetFolder, { uid: true });
       res.json({ success: true });
     } finally {
       mailbox.release();
     }
-    await client.logout();
   } catch (err) {
     res.status(500).json({ error: err.message });
+  } finally {
+    try { await client.logout(); } catch (e) {}
   }
 });
 
@@ -404,7 +411,7 @@ app.get('/api/mail/attachment', async (req, res) => {
   const client = new ImapFlow({
     host: process.env.MAIL_SERVER_HOST || 'mailserver',
     port: 143, secure: false, auth: { user: email, pass: password },
-    tls: { rejectUnauthorized: false }, ignoreTLS: true, logger: false,
+    tls: { rejectUnauthorized: false }, logger: false,
   });
 
   try {
@@ -423,9 +430,10 @@ app.get('/api/mail/attachment', async (req, res) => {
     } finally {
       mailbox.release();
     }
-    await client.logout();
   } catch (err) {
     res.status(500).send(err.message);
+  } finally {
+    try { await client.logout(); } catch (e) {}
   }
 });
 
@@ -444,7 +452,7 @@ app.post('/api/mail/toggle-star', async (req, res) => {
   const client = new ImapFlow({
     host: process.env.MAIL_SERVER_HOST || 'mailserver',
     port: 143, secure: false, auth: { user: email, pass: password },
-    tls: { rejectUnauthorized: false }, ignoreTLS: true, logger: false,
+    tls: { rejectUnauthorized: false }, logger: false,
   });
 
   try {
@@ -460,9 +468,10 @@ app.post('/api/mail/toggle-star', async (req, res) => {
     } finally {
       mailbox.release();
     }
-    await client.logout();
   } catch (err) {
     res.status(500).json({ error: err.message });
+  } finally {
+    try { await client.logout(); } catch (e) {}
   }
 });
 
@@ -473,7 +482,7 @@ app.post('/api/mail/fetch', async (req, res) => {
   const client = new ImapFlow({
     host: process.env.MAIL_SERVER_HOST || 'mailserver',
     port: 143, secure: false, auth: { user: email, pass: password },
-    tls: { rejectUnauthorized: false }, ignoreTLS: true, logger: false,
+    tls: { rejectUnauthorized: false }, logger: false,
   });
 
   try {
@@ -481,21 +490,26 @@ app.post('/api/mail/fetch', async (req, res) => {
     const mailbox = await client.getMailboxLock(folder);
     try {
       const msg = await client.fetchOne(uid.toString(), { source: true }, { uid: true });
+      if (!msg) {
+        return res.status(404).json({ error: 'Message not found' });
+      }
       // Mark as read
       await client.messageFlagsAdd(uid.toString(), ['\\Seen'], { uid: true });
       
       const parsed = await simpleParser(msg.source);
       res.json({
-        text: parsed.text,
-        html: parsed.html || parsed.textAsHtml,
-        attachments: parsed.attachments?.map(a => ({ filename: a.filename, size: a.size }))
+        text: parsed.text || '',
+        html: parsed.html || parsed.textAsHtml || '',
+        attachments: parsed.attachments?.map(a => ({ filename: a.filename, size: a.size })) || []
       });
     } finally {
       mailbox.release();
     }
-    await client.logout();
   } catch (err) {
+    console.error(`Fetch Error [${folder} - ${uid}]:`, err.message);
     res.status(500).json({ error: err.message });
+  } finally {
+    try { await client.logout(); } catch (e) {}
   }
 });
 
@@ -506,28 +520,31 @@ app.post('/api/mail/delete', async (req, res) => {
   const client = new ImapFlow({
     host: process.env.MAIL_SERVER_HOST || 'mailserver',
     port: 143, secure: false, auth: { user: email, pass: password },
-    tls: { rejectUnauthorized: false }, ignoreTLS: true, logger: false,
+    tls: { rejectUnauthorized: false }, logger: false,
   });
 
   try {
     await client.connect();
     const mailbox = await client.getMailboxLock(folder);
     try {
+      const uidSeq = Array.isArray(uid) ? uid.join(',') : uid?.toString();
+      if (!uidSeq) return res.status(400).json({ error: 'No UIDs provided' });
       if (folder.toLowerCase() === 'trash') {
         // Permanent Delete
-        await client.messageDelete(uid.toString(), { uid: true });
+        await client.messageDelete(uidSeq, { uid: true });
       } else {
         // Ensure Trash exists before moving
         try { await client.mailboxCreate('Trash'); } catch (e) {}
-        await client.messageMove(uid.toString(), 'Trash', { uid: true });
+        await client.messageMove(uidSeq, 'Trash', { uid: true });
       }
       res.json({ success: true });
     } finally {
       mailbox.release();
     }
-    await client.logout();
   } catch (err) {
     res.status(500).json({ error: err.message });
+  } finally {
+    try { await client.logout(); } catch (e) {}
   }
 });
 
@@ -537,6 +554,41 @@ app.post('/api/user/signature', (req, res) => {
   email = normalizeEmail(email);
   metadata.updateUser(email, { signature });
   res.json({ success: true });
+});
+
+// User: Contacts
+app.post('/api/user/contacts', (req, res) => {
+  let { email, contact } = req.body; // contact: { name, email }
+  email = normalizeEmail(email);
+  const user = metadata.getUser(email);
+  const contacts = user.contacts || [];
+  
+  // Update if exists, else add
+  const index = contacts.findIndex(c => c.email === contact.email);
+  if (index >= 0) {
+    contacts[index] = contact;
+  } else {
+    contacts.push(contact);
+  }
+  
+  metadata.updateUser(email, { contacts });
+  res.json({ success: true, contacts });
+});
+
+app.get('/api/user/contacts', (req, res) => {
+  let { email } = req.query;
+  email = normalizeEmail(email);
+  const user = metadata.getUser(email);
+  res.json(user.contacts || []);
+});
+
+app.delete('/api/user/contacts', (req, res) => {
+  let { email, contactEmail } = req.body;
+  email = normalizeEmail(email);
+  const user = metadata.getUser(email);
+  const contacts = (user.contacts || []).filter(c => c.email !== contactEmail);
+  metadata.updateUser(email, { contacts });
+  res.json({ success: true, contacts });
 });
 
 // Webmail: Send Email (SMTP + Append to Sent)
@@ -569,7 +621,7 @@ app.post('/api/mail/send', upload.array('attachments'), async (req, res) => {
     const client = new ImapFlow({
       host: process.env.MAIL_SERVER_HOST || 'mailserver',
       port: 143, secure: false, auth: { user: userEmail, pass: userPass },
-      tls: { rejectUnauthorized: false }, ignoreTLS: true, logger: false,
+      tls: { rejectUnauthorized: false }, logger: false,
     });
     await client.connect();
     try {
@@ -586,8 +638,9 @@ app.post('/api/mail/send', upload.array('attachments'), async (req, res) => {
       await client.append('Sent', raw, ['\\Seen']);
     } catch (e) {
       console.warn('Failed to append to Sent folder:', e.message);
+    } finally {
+      try { await client.logout(); } catch (e) {}
     }
-    await client.logout();
 
     res.json({ success: true });
   } catch (err) {

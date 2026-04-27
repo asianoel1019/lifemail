@@ -1,0 +1,8 @@
+Version 0.5.0.20260427-stable
+- Added split-view for quick mail preview.
+- Implemented multi-selection (Ctrl/Shift).
+- Added batch move and delete operations.
+- Optimized IMAP connection management.
+- Fixed various stability issues.
+- Added version information screen.
+- Enhanced backend security and connection robustness.
